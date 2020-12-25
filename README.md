@@ -9,6 +9,7 @@ Both of these probably came with your distro, check with `which wg` and `which s
 
 ## How-To:
 ***I will not be going over how to configure your network or system to reach the Wireguard VPN server outside saying that the server's endpoint port must be accessible to devices attempting to connect, you may have to enable forwarding, and you may have to add routes!***
+
 Download a copy of the script. Run the script. Read the output. Adjust the variables in the begining of the script with your favorite editor if it suites you (listed below). Run the script with a valid hostname/username input and it will "move" (copy itself with updated information) to `/etc/wireguard/INTERFACE/generatewg_INTERFACE` and then output the contents of a file you can give to a Wireguard client to connect. To start the VPN interface run `/etc/wireguard/INTERFACE/generatewg_INTERFACE INTERFACE`. Each copy of the script is meant to handle it's own interface. If you want to backup or move your VPN server merely copy the specific `/etc/wireguard/INTERFACE` directory to a storage location, move it back to the original location on the new system, and run the script with valid input to restore.
 ```
 Edit variables in begining of script before running!
