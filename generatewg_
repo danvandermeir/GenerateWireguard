@@ -1,4 +1,5 @@
 #!/bin/bash
+#GenerateWireguard v1
 
 #what VPN clients connect to
 #if left blank this will attempt to determine WAN IP and changes all client config files
