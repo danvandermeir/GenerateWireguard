@@ -1,4 +1,4 @@
-# WireguardConfigurator
+# GenerateWireguard
 Make VPNs easy! Easy Wireguard server setup and configuration management script for typical home use case. Makes backup, restore, and migration of a Wireguard VPN server easy.
 
 ## Pre-requisites:
