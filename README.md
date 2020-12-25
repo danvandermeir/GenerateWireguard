@@ -82,3 +82,4 @@ A VPN can seem a daunting task. Even with how simple Wireguard is there are a lo
 ## To-Do:
 1. Add script function to list all hostnames/usernames/peers
 2. Add some basic implimentation of ip forwarding and possibly associated routes if wg-quick doesn't already do what I'm hoping
+3. Add some gretap magic?
