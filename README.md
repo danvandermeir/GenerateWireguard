@@ -4,7 +4,7 @@ Make VPNs easy! Easy Wireguard server setup and configuration management script 
 ## Pre-requisites:
 Both of these probably came with your distro, check with `which wg` and `which sed`.
 - [wireguard](https://github.com/WireGuard/)
-- [sed](https://github.com/mirror/sed/) (Most variants of `sed` will do. Make ABSOLUTELY sure you edit this script file's variables pre-run if you do not have `sed`)
+- [sed](https://github.com/mirror/sed/) (Most variants of `sed` will do. Make ABSOLUTELY sure you edit this script file's variables, name, and location pre-run if you do not have `sed` to match below.)
 
 
 ## How-To:
