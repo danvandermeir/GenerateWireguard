@@ -6,20 +6,41 @@ ENDPOINT_HOSTNAME_OR_WANIP=''
 #if left blank uses default port of 51820
 ENDPOINT_PORT=''
 
-#name of the local Wireguard interface this script controls, and associated interface network details
+#name of the local Wireguard interface this script controls
 #if left blank lowest numbered default selected (wg0 - wg100)
 WG_INTERFACE_NAME=''
-#handles only single subnet, typical 254 address LAN setup, otherwise can't really halp u :)
+
+#attempt to connect VPN network to default LAN if true
+WG_NETWORK_ISOLATE=false
+
+#handles only single subnet, typical 254 address LAN setup
 #DO NOT LEAVE BLANK
-WG_NETWORK='10.10.0.0/24'
-WG_ADDRESS_RANGE_BEG='11'
+WG_NETWORK='10.10.0.1/24'
+WG_ADDRESS_RANGE_BEG='2'
 WG_ADDRESS_RANGE_END='254'
 
 ##########DO NOT EDIT BELOW SCRIPT UNLESS YOU KNOW WHAT YOU'RE DOING, KTHNX##########
 WGSCRIPT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )/${0##*/}"
 if [ -z $1 ] || [ "${1}" = "-h" ] || [ "${1}" = "-help" ] || [ "${1}" = "help" ]
 	then
-		printf "\n\nEdit variables in begining of script before running!\n\nUsage:\n$WGSCRIPT <REQUIRED> <OPTION> <LIVE>\n\nREQUIRED:\n\t\t- A hostname or username of the Wireguard interface this script controls.\n\t\t  Provides details (config file) for hostname or username. Creates a peer if new.\n\t\t  If Wireguard interface name provided script will stand up or restart the interface with no routes.\n\nOPTION:\n\tnew\t- Generate a new private and public key for specified hostname or username and display.\n\tOR\n\tremove\t- Remove peer with specified hostname or username.\n\nLIVE:\n\tlive\t- If provided will update the Wireguard interface with new or removed peer information.\n\t\t  Config files are otherwise generated for next interface start.\n\n"
+		printf "\n\nEdit variables in begining of script before running!\n\
+\n\
+Usage:\n$WGSCRIPT <REQUIRED> <OPTION> <LIVE>\n\
+\n\
+REQUIRED:\n\
+\t\t- A hostname or username of the Wireguard interface this script controls.\n\
+\t\t  Provides details (config file) for hostname or username. Creates a peer if new.\n\
+\t\t  If Wireguard interface name provided script will stand up or restart the interface with no routes.\n\
+\n\
+OPTION:\n\
+\t\
+new\t- Generate a new private and public key for specified hostname or username and display.\n\
+\tOR\n\
+\tremove\t- Remove peer with specified hostname or username.\n\
+\nLIVE:\n\
+\tlive\t- If provided will update the Wireguard interface with new or removed peer information.\n\
+\t\t  Config files are otherwise generated for next interface start.\n\
+\n"
 		exit 1
 	fi
 if [ -z $WG_NETWORK ]
@@ -50,7 +71,8 @@ if [ -z $WG_INTERFACE_NAME ]
 					then
 						WGSCRIPT_NEW="${WGDIR}wg${x}/generatewg_wg${x}"
 						WG_INTERFACE_NAME="wg${x}"
-						printf "Script WG_INTERFACE_NAME variable not set!\nWG_INTERFACE_NAME set to ${WG_INTERFACE_NAME}!\n"
+						printf "Script WG_INTERFACE_NAME variable not set!\n\
+WG_INTERFACE_NAME set to ${WG_INTERFACE_NAME}!\n"
 						break
 					fi
 			done
@@ -75,7 +97,9 @@ if [ -f ${WGSCONF}publickey ]
 if [ -z $ENDPOINT_HOSTNAME_OR_WANIP ]
 	then
 		ENDPOINT_HOSTNAME_OR_WANIP="$(dig +short myip.opendns.com @resolver1.opendns.com)"
-		printf "Script ENDPOINT_HOSTNAME_OR_WANIP variable not set!\nENPOINT_HOSTNAME_OR_WANIP set to ${ENDPOINT_HOSTNAME_OR_WANIP} on port ${ENDPOINT_PORT}!\nAll hostname or username config files belonging to Wireguard interface name ${WG_INTERFACE_NAME} reset!\n"
+		printf "Script ENDPOINT_HOSTNAME_OR_WANIP variable not set!\n\
+ENPOINT_HOSTNAME_OR_WANIP set to ${ENDPOINT_HOSTNAME_OR_WANIP} on port ${ENDPOINT_PORT}!\n\
+All hostname or username config files belonging to Wireguard interface name ${WG_INTERFACE_NAME} reset!\n"
 		if [ -z $WGSCRIPT_NEW ]
 			then
 				WGSCRIPT_NEW="${WGSCRIPT}"
@@ -96,7 +120,15 @@ if [ -z $ENDPOINT_HOSTNAME_OR_WANIP ]
 								PUBLKEY=$(<"${x}/publickey")
 								PRIVKEY=$(<"${x}/privatekey")
 								printf "\t${WGC} - ${ADDRESS} - ${PUBLKEY}\n"
-								WGCFILE="[Interface]\nPrivateKey = ${PRIVKEY}\nPublicKey = ${PUBLKEY}\nAddress = ${ADDRESS}/$(echo $WG_NETWORK|cut -d'/' -f2)\n\n[Peer]\nPublicKey = ${SPUBLKEY}\nAllowedIPs = $WG_NETWORK\nEndpoint = $ENDPOINT_HOSTNAME_OR_WANIP:$ENDPOINT_PORT"
+								WGCFILE="[Interface]\n\
+PrivateKey = ${PRIVKEY}\n\
+PublicKey = ${PUBLKEY}\n\
+Address = ${ADDRESS}/$(echo $WG_NETWORK|cut -d'/' -f2)\n\
+\n\
+[Peer]\n\
+PublicKey = ${SPUBLKEY}\n\
+AllowedIPs = $WG_NETWORK\n\
+Endpoint = $ENDPOINT_HOSTNAME_OR_WANIP:$ENDPOINT_PORT"
 								printf "${WGCFILE}" > ${WGCCONF}
 							fi
 					done
@@ -105,14 +137,21 @@ if [ -z $ENDPOINT_HOSTNAME_OR_WANIP ]
 WGC="${1}"
 WGCCONF="${WGCCONFDIR}${WGC}.conf"
 WGSCONFCREATE () {
-	WGSFILE="[Interface]\nPrivateKey = ${SPRIVKEY}\nPublicKey = ${SPUBLKEY}\nListenPort = ${ENDPOINT_PORT}"
+	WGSFILE="[Interface]\n\
+PrivateKey = ${SPRIVKEY}\n\
+PublicKey = ${SPUBLKEY}\n\
+ListenPort = ${ENDPOINT_PORT}"
 	if [ -d ${WGSDIR} ]
 		then
 			for x in $(find ${WGSDIR} -maxdepth 1 -mindepth 1 -type d)
 				do
 					if [ -f ${x}/publickey ] && [ -f ${x}/address ]
 						then
-							WGSFILE="$WGSFILE\n\n[Peer]\nPublicKey = $(<${x}/publickey)\nAllowedIPs = $(<${x}/address)/32"
+							WGSFILE="$WGSFILE\n\
+\n\
+[Peer]\n\
+PublicKey = $(<${x}/publickey)\n\
+AllowedIPs = $(<${x}/address)/32"
 						fi
 				done
 		else
@@ -139,9 +178,13 @@ WGSLIVE () {
 				else
 					if [ -z $WGSCRIPT_NEW ]
 						then
-							printf "Interface ${WG_INTERFACE_NAME} not running!\nStart interface with:\n${WGSCRIPT} ${WG_INTERFACE_NAME}\n"
+							printf "Interface ${WG_INTERFACE_NAME} not running!\n\
+Start interface with:\n\
+${WGSCRIPT} ${WG_INTERFACE_NAME}\n"
 						else
-							printf "Interface ${WG_INTERFACE_NAME} not running!\nStart interface with:\n${WGSCRIPT_NEW} ${WG_INTERFACE_NAME}\n"
+							printf "Interface ${WG_INTERFACE_NAME} not running!\n\
+Start interface with:\n\
+${WGSCRIPT_NEW} ${WG_INTERFACE_NAME}\n"
 						fi
 				fi
 		fi
@@ -227,7 +270,15 @@ if [ "${2}" = "remove" ]
 			fi
 		if [ ! -f ${WGCCONF} ] || [ "${2}" = "new" ]
 			then
-				WGCFILE="[Interface]\nPrivateKey = $PRIVKEY\nPublicKey = $PUBLKEY\nAddress = $ADDRESS/$(echo $WG_NETWORK|cut -d'/' -f2)\n\n[Peer]\nPublicKey = $SPUBLKEY\nAllowedIPs = $WG_NETWORK\nEndpoint = $ENDPOINT_HOSTNAME_OR_WANIP:$ENDPOINT_PORT"
+				WGCFILE="[Interface]\n\
+PrivateKey = $PRIVKEY\n\
+PublicKey = $PUBLKEY\n\
+Address = $ADDRESS/$(echo $WG_NETWORK|cut -d'/' -f2)\n\
+\n\
+[Peer]\n\
+PublicKey = $SPUBLKEY\n\
+AllowedIPs = $WG_NETWORK\n\
+Endpoint = $ENDPOINT_HOSTNAME_OR_WANIP:$ENDPOINT_PORT"
 				printf "${WGCFILE}" > ${WGCCONF}
 			else
 				WGCFILE=$(<"${WGCCONF}")
@@ -238,7 +289,11 @@ if [ "${2}" = "remove" ]
 				WGSCONFCREATE
 		elif ! grep -q "$ADDRESS" ${WGSCONF}
 			then
-				printf "\n\n[Peer]\nPublicKey = $PUBLKEY\nAllowedIPs = $ADDRESS/32" >> ${WGSCONF}
+				printf "\n\
+\n\
+[Peer]\n\
+PublicKey = $PUBLKEY\n\
+AllowedIPs = $ADDRESS/32" >> ${WGSCONF}
 			fi
 		WGSLIVE ${2} ${3}
 		printf "${WGCFILE}\n"
