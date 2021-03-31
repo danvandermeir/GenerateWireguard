@@ -1,108 +1,191 @@
 #!/bin/bash
 
-#what VPN clients connect to
-#if left blank this will attempt to determine WAN IP and changes all client config files
-ENDPOINT_HOSTNAME_OR_WANIP=''
-#if left blank uses default port of 51820
-ENDPOINT_PORT=''
+#what VPN peers/"clients" connect to
+#if blank attempts to determine WAN IP and changes all client config files if WAN IP has changed
+WG_ENDPOINT=''
+
+#if blank uses default port of 51820
+WG_ENDPOINT_PORT=''
 
 #name of the local Wireguard interface this script controls
-#if left blank lowest numbered default selected (wg0 - wg100)
-WG_INTERFACE_NAME=''
+#if blank lowest numbered default name selected (wg0 - wg100)
+WG_IFACE_NAME=''
+
+#handles only single subnet in form X.X.X.X/X
+#if blank checks for default LAN and uses next ascending available third octet with lowest available fourth octet
+WG_IFACE_NTWRK=''
 
 #attempt to connect VPN network to default LAN if true
-WG_NETWORK_ISOLATE=false
+WG_IFACE_NTWRK_ISOLATE=false
 
-#handles only single subnet, typical 254 address LAN setup
-#DO NOT LEAVE BLANK
-WG_NETWORK='10.10.0.1/24'
-WG_ADDRESS_RANGE_BEG='2'
-WG_ADDRESS_RANGE_END='254'
 
 ##########DO NOT EDIT BELOW SCRIPT UNLESS YOU KNOW WHAT YOU'RE DOING, KTHNX##########
-WGSCRIPT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )/${0##*/}"
-if [ -z $1 ] || [ "${1}" = "-h" ] || [ "${1}" = "-help" ] || [ "${1}" = "help" ]
+WRITEWGSCONF=false
+WGSCRIPTNAME="${0##*/}"
+WGSCRIPTPATH="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )/${WGSCRIPTNAME}"
+
+#HELP REQUEST/HOW TO USE
+if [ -z $1 ] || [[ $1 =~ '-h'|'-help'|'--help'|'help' ]]
 	then
-		printf "\n\nEdit variables in begining of script before running!\n\
+		printf "Edit variables in begining of script before running!\n\
 \n\
-Usage:\n$WGSCRIPT <REQUIRED> <OPTION> <LIVE>\n\
+Usage:\n\
+$WGSCRIPTPATH <REQUIRED> <OPTION> <LIVE>\n\
 \n\
 REQUIRED:\n\
-\t\t- A hostname or username of the Wireguard interface this script controls.\n\
-\t\t  Provides details (config file) for hostname or username. Creates a peer if new.\n\
-\t\t  If Wireguard interface name provided script will stand up or restart the interface with no routes.\n\
+\t\t- A hostname or username controlled by this script for this Wireguard interface name.\n\
+\t\t  Creates a peer if 'new' OPTION specified. Provides details (config file) for hostname or username.\n\
+\n\
+\t\t-  If Wireguard interface name provided script will stand up or restart the interface using existing configuration.\n\
 \n\
 OPTION:\n\
-\t\
-new\t- Generate a new private and public key for specified hostname or username and display.\n\
-\tOR\n\
+\tnew\t- Generate a new private and public key for specified hostname or username and display.\n\
+\n\
 \tremove\t- Remove peer with specified hostname or username.\n\
-\nLIVE:\n\
+\n\
+LIVE:\n\
 \tlive\t- If provided will update the Wireguard interface with new or removed peer information.\n\
-\t\t  Config files are otherwise generated for next interface start.\n\
-\n"
-		exit 1
+\t\t  Configuration files are otherwise generated for next interface start.\n"
+		exit
 	fi
-if [ -z $WG_NETWORK ]
+
+#IF $WG_IFACE_NAME UNSET DETERMINES WIREGAURD INTERFACE NAME FROM SCRIPT NAME (wireguard_X) OR CREATES NEW DEFAULT WIREGAURD INTERFACE (wgX) WITH CONFIGURATION FILES
+#VERIFY SCRIPT NAME AND WIREGUARD INTERFACE CONFIGURATION FILE
+WGDIR='/etc/wireguard/'
+WGSCRIPTWRITE () {
+	WGSCRIPTPATH_NEW="$1$3/generatewg_$3"
+	if [ ! -f "$1/$3/generatewg_$3" ]
+		then
+			if [ ! -d "$1/$3" ]
+				then
+					mkdir "$1/$3"
+				fi
+			cp "$2" "$1/$3/generatewg_$3"
+			chmod 744 "$1/$3/generatewg_$3"
+			printf "Script copied to $1/$3/generatewg_$3!\n"
+		fi
+	printf "Use $1/$3/generatewg_$3 instead! Script can be moved.\n"
+}
+if [ -z $WG_IFACE_NAME ]
 	then
-		printf "Script variable WG_NETWORK not set!\n"
-		exit 1
+		if [ ! "$WGSCRIPTNAME" = "wireguard_" ] && [[ "$WGSCRIPTPATH" == "wireguard_"* ]]
+			then
+				WG_IFACE_NAME="$(printf \"${WGSCRIPTPATH}\"|rev|cut -d'_' -f1|rev)"
+			else
+				for x in {0..100}
+					do
+						if [ ! -d /sys/class/net/wg${x} ] && [ ! -f ${WGDIR}wg${x}/generatewg_wg${x} ]
+							then
+								WG_IFACE_NAME="wg$x"
+								printf "Script WG_IFACE_NAME variable not set and script name has no hints!\n\
+WG_IFACE_NAME set to ${WG_IFACE_NAME}!\n" 1>&2
+								WGSCRIPTWRITE "$WGDIR" "$WGSCRIPTPATH" "$WG_IFACE_NAME"
+								WRITEWGSCONF=true
+								break
+							fi
+					done
+			fi
+	else
+		if [ ! "$WGSCRIPTNAME" = "wireguard_$WG_IFACE_NAME" ]
+			then
+				printf "Script name is improper!\n" 1>&2
+				WGSCRIPTWRITE "$WGDIR" "$WGSCRIPTPATH" "$WG_IFACE_NAME"
+			fi
 	fi
+
+#SET VARIABLES AND LOAD WIREGAURD INTERFACE CONFIGURATION FILE TO MEMORY OR CREATE IT
+WGSDIR="$WGDIR$WG_IFACE_NAME/"
+WGSCONFPATH="$WGDIR$WG_IFACE_NAME.conf"
+if [ -f ${WGSCONFPATH} ]
+	then
+		WGSCONF=$(<"${WGSCONFPATH}")
+	else
+		WRITEWGSCONF=true
+	fi
+
+#DETERMINE WIREGAURD INTERFACE IP AND NETWORK FROM SENTINAL FILES, CONFIGURATION FILE, OR CREATE NEW FROM DEFAULT LAN AS TEMPLATE
+#VERIFY SENTINAL AND CONFIGURATION FILE CONTINUITY AGAINST SCRIPT SETTING, IF CHANGED MODIFIES ALL "CLIENT"/PEER CONFIGURATION FILES TO MATCH
+if [ -z $WG_IFACE_NTWRK ]
+	then
+		if [ -f ${WGSDIR}address ]
+			then
+				WG_IFACE_NTWRK=$(<"${WGSDIR}address")
+		else
+			if [ -z $WGSCONF ]
+				then
+					WG_IFACE_NTWRK=$(ip route list default|rev|cut -d' ' -f1|rev)
+					WG_IFACE_NTWRK=$(ip route list|grep "${WG_IFACE_NTWRK}"|grep -v default|cut -d' ' -f1)
+
+					WG_ADDRESS_RANGE_BEG=$(printf "${WG_IFACE_NTWRK}"|cut -d'/' -f1)|cut -d'.' -f3
+					WG_ADDRESS_RANGE_BEG=$(( WG_ADDRESS_RANGE_BEG + 1 ))
+					WG_ADDRESS_RANGE_END=$(printf "${WG_IFACE_NTWRK}"|cut -d'/' -f2)
+					printf "Script variable WG_IFACE_NTWRK not set!\n" 1>&2
+					WRITEWGSCONF=true
+				else
+					WG_IFACE_NTWRK=$(grep 'Address = ' <<< "${WGSCONF}"|rev|cut -d' ' -f1|rev)
+				fi
+			printf "${WG_IFACE_NTWRK}">"${WGSDIR}address"
+		fi
+	else
+		if [ -f ${WGSDIR}address ] && [ ! "$(<${WGSDIR}address)" = "${WG_IFACE_NTWRK}" ]
+			then
+				WG_IFACE_NTWRK=$(<"${WGSDIR}address")
+
+			fi
+	fi
+if
+	if [[ "${WG_IFACE_NTWRK}" == *"/"* ]]
+		then
+			WG_ADDRESS_RANGE_BEG=
+		fi
 if [ -z $WG_ADDRESS_RANGE_BEG ]
 	then
-		printf "Script variable WG_ADDRESS_RANGE_BEG not set!\n"
+		if [ -f ${WGSDIR}address ]
+			then
+				WG_IFACE_NTWRK=$(<"${WGSDIR}address")
+		elif [ ! -z $WGSCONF ]
+			then
+				WG_IFACE_NTWRK=$(grep 'Address = ' <<< "${WGSCONF}"|rev|cut -d' ' -f1|rev)
+			else
+				WG_IFACE_NTWRK=$(ip route list default|rev|cut -d' ' -f1|rev)
+				WG_IFACE_NTWRK=$(ip route list|grep "${WG_IFACE_NTWRK}"|grep -v default|cut -d' ' -f1)
+				printf "Script variable WG_IFACE_NTWRK not set!\n" 1>&2
+			fi
+		printf "Script variable WG_ADDRESS_RANGE_BEG not set!\n" 1>&2
 		exit 1
 	fi
 if [ -z $WG_ADDRESS_RANGE_END ]
 	then
-		printf "Script variable WG_ADDRESS_RANGE_END not set!\n"
+		printf "Script variable WG_ADDRESS_RANGE_END not set!\n" 1>&2
 		exit 1
 	fi
-if [ -z $ENDPOINT_PORT ]
+if [ -z $WG_ENDPOINT_PORT ]
 	then
-		ENDPOINT_PORT="51820"
+		WG_ENDPOINT_PORT="51820"
 	fi
-WGDIR='/etc/wireguard/'
-if [ -z $WG_INTERFACE_NAME ]
-	then
-		for x in {0..100}
-			do
-				if [ ! -d /sys/class/net/wg${x} ] && [ ! -f ${WGDIR}wg${x}/generatewg_wg${x} ]
-					then
-						WGSCRIPT_NEW="${WGDIR}wg${x}/generatewg_wg${x}"
-						WG_INTERFACE_NAME="wg${x}"
-						printf "Script WG_INTERFACE_NAME variable not set!\n\
-WG_INTERFACE_NAME set to ${WG_INTERFACE_NAME}!\n"
-						break
-					fi
-			done
-	fi
-WGSDIR="${WGDIR}${WG_INTERFACE_NAME}/"
-WGSCONF="${WGDIR}${WG_INTERFACE_NAME}.conf"
-WGCCONFDIR="${WGSDIR}${1}/"
-if [ -f ${WGSCONF}privatekey ]
+if [ -f ${WGSCONFPATH}privatekey ]
 	then
 		SPRIVKEY=$(<"${WGSDIR}privatekey")
 	else
 		SPRIVKEY=$(wg genkey)
 		printf "${SPRIVKEY}" > ${WGSDIR}privatekey
 	fi
-if [ -f ${WGSCONF}publickey ]
+if [ -f ${WGSCONFPATH}publickey ]
 	then
 		SPUBLKEY=$(<"${WGSDIR}publickey")
 	else
 		SPUBLKEY=$(printf "${SPRIVKEY}" | wg pubkey)
 		printf "${SPUBLKEY}" > ${WGSDIR}publickey
 	fi
-if [ -z $ENDPOINT_HOSTNAME_OR_WANIP ]
+if [ -z $WG_ENDPOINT ]
 	then
-		ENDPOINT_HOSTNAME_OR_WANIP="$(dig +short myip.opendns.com @resolver1.opendns.com)"
-		printf "Script ENDPOINT_HOSTNAME_OR_WANIP variable not set!\n\
-ENPOINT_HOSTNAME_OR_WANIP set to ${ENDPOINT_HOSTNAME_OR_WANIP} on port ${ENDPOINT_PORT}!\n\
-All hostname or username config files belonging to Wireguard interface name ${WG_INTERFACE_NAME} reset!\n"
-		if [ -z $WGSCRIPT_NEW ]
+		WG_ENDPOINT="$(dig +short myip.opendns.com @resolver1.opendns.com)"
+		printf "Script WG_ENDPOINT variable not set!\n\
+ENPOINT_HOSTNAME_OR_WANIP set to ${WG_ENDPOINT} on port ${WG_ENDPOINT_PORT}!\n\
+All hostname or username config files belonging to Wireguard interface name ${WG_IFACE_NAME} reset!\n"
+		if [ -z $WGSCRIPTPATH_NEW ]
 			then
-				WGSCRIPT_NEW="${WGSCRIPT}"
+				WGSCRIPTPATH_NEW="${WGSCRIPTPATH}"
 			fi
 		if [ -d ${WGSDIR} ]
 			then
@@ -123,24 +206,25 @@ All hostname or username config files belonging to Wireguard interface name ${WG
 								WGCFILE="[Interface]\n\
 PrivateKey = ${PRIVKEY}\n\
 PublicKey = ${PUBLKEY}\n\
-Address = ${ADDRESS}/$(echo $WG_NETWORK|cut -d'/' -f2)\n\
+Address = ${ADDRESS}/$(echo $WG_IFACE_NTWRK|cut -d'/' -f2)\n\
 \n\
 [Peer]\n\
 PublicKey = ${SPUBLKEY}\n\
-AllowedIPs = $WG_NETWORK\n\
-Endpoint = $ENDPOINT_HOSTNAME_OR_WANIP:$ENDPOINT_PORT"
+AllowedIPs = $WG_IFACE_NTWRK\n\
+Endpoint = $WG_ENDPOINT:$WG_ENDPOINT_PORT"
 								printf "${WGCFILE}" > ${WGCCONF}
 							fi
 					done
 			fi
 	fi
 WGC="${1}"
+WGCCONFDIR="$WGSDIR$1/"
 WGCCONF="${WGCCONFDIR}${WGC}.conf"
-WGSCONFCREATE () {
+WGSCONFPATHCREATE () {
 	WGSFILE="[Interface]\n\
 PrivateKey = ${SPRIVKEY}\n\
 PublicKey = ${SPUBLKEY}\n\
-ListenPort = ${ENDPOINT_PORT}"
+ListenPort = ${WG_ENDPOINT_PORT}"
 	if [ -d ${WGSDIR} ]
 		then
 			for x in $(find ${WGSDIR} -maxdepth 1 -mindepth 1 -type d)
@@ -157,49 +241,49 @@ AllowedIPs = $(<${x}/address)/32"
 		else
 			mkdir -p ${WGSDIR}
 		fi
-	if [ ! -z $WGSCRIPT_NEW ]
+	if [ ! -z $WGSCRIPTPATH_NEW ]
 		then
-			if [ ! -f ${WGSCRIPT_NEW} ]
+			if [ ! -f ${WGSCRIPTPATH_NEW} ]
 				then
-					printf "Script moved to: ${WGSCRIPT_NEW}\n"
-					cp ${WGSCRIPT} ${WGSCRIPT_NEW}
+					printf "Script moved to: ${WGSCRIPTPATH_NEW}\n"
+					cp ${WGSCRIPTPATH} ${WGSCRIPTPATH_NEW}
 				fi
-			sed -i -e "0,/.*ENDPOINT_HOSTNAME_OR_WANIP=.*/ s/.*ENDPOINT_HOSTNAME_OR_WANIP=.*/ENDPOINT_HOSTNAME_OR_WANIP='${ENDPOINT_HOSTNAME_OR_WANIP}'/" ${WGSCRIPT_NEW}
-			sed -i -e "0,/.*WG_INTERFACE_NAME=.*/ s/.*WG_INTERFACE_NAME=.*/WG_INTERFACE_NAME='${WG_INTERFACE_NAME}'/" ${WGSCRIPT_NEW}
+			sed -i -e "0,/.*WG_ENDPOINT=.*/ s/.*WG_ENDPOINT=.*/WG_ENDPOINT='${WG_ENDPOINT}'/" ${WGSCRIPTPATH_NEW}
+			sed -i -e "0,/.*WG_IFACE_NAME=.*/ s/.*WG_IFACE_NAME=.*/WG_IFACE_NAME='${WG_IFACE_NAME}'/" ${WGSCRIPTPATH_NEW}
 		fi
-	printf "${WGSFILE}" > ${WGSCONF}
+	printf "${WGSFILE}" > ${WGSCONFPATH}
 }
 WGSLIVE () {
 	if [ "${2}" = "live" ] || ([ "${1}" = "live" ] && [ -z $3 ])
 		then
-			if [ -d /sys/class/net/${WG_INTERFACE_NAME} ]
+			if [ -d /sys/class/net/${WG_IFACE_NAME} ]
 				then
-					wg syncconf ${WG_INTERFACE_NAME} ${WGSCONF}
+					wg syncconf ${WG_IFACE_NAME} ${WGSCONFPATH}
 				else
-					if [ -z $WGSCRIPT_NEW ]
+					if [ -z $WGSCRIPTPATH_NEW ]
 						then
-							printf "Interface ${WG_INTERFACE_NAME} not running!\n\
+							printf "Interface ${WG_IFACE_NAME} not running!\n\
 Start interface with:\n\
-${WGSCRIPT} ${WG_INTERFACE_NAME}\n"
+${WGSCRIPTPATH} ${WG_IFACE_NAME}\n"
 						else
-							printf "Interface ${WG_INTERFACE_NAME} not running!\n\
+							printf "Interface ${WG_IFACE_NAME} not running!\n\
 Start interface with:\n\
-${WGSCRIPT_NEW} ${WG_INTERFACE_NAME}\n"
+${WGSCRIPTPATH_NEW} ${WG_IFACE_NAME}\n"
 						fi
 				fi
 		fi
 }
-if [ ! -f ${WGSCONF} ] || [ ! -z $WGSCRIPT_NEW ]
+if [ ! -f ${WGSCONFPATH} ] || [ ! -z $WGSCRIPTPATH_NEW ]
 	then
-		WGSCONFCREATE
+		WGSCONFPATHCREATE
 	fi
-if [ "${WGC}" = "${WG_INTERFACE_NAME}" ]
+if [ "${WGC}" = "${WG_IFACE_NAME}" ]
 	then
-		if [ -d /sys/class/net/${WG_INTERFACE_NAME} ]
+		if [ -d /sys/class/net/${WG_IFACE_NAME} ]
 			then
-				ip link delete dev ${WG_INTERFACE_NAME}
+				ip link delete dev ${WG_IFACE_NAME}
 			fi
-		ip link add dev ${WG_INTERFACE_NAME} type wireguard && wg setconf ${WG_INTERFACE_NAME} ${WGSCONF} && exit
+		ip link add dev ${WG_IFACE_NAME} type wireguard && wg setconf ${WG_IFACE_NAME} ${WGSCONFPATH} && exit
 		exit 1
 	fi
 if [ "${2}" = "remove" ]
@@ -211,8 +295,8 @@ if [ "${2}" = "remove" ]
 			else
 				printf "No Hostname or Username called ${WGC} exists!\n"
 			fi
-		rm -f ${WGSCONF}
-		WGSCONFCREATE
+		rm -f ${WGSCONFPATH}
+		WGSCONFPATHCREATE
 		WGSLIVE ${2} ${3}
 	else
 		if [ ! -d ${WGCCONFDIR} ]
@@ -223,8 +307,8 @@ if [ "${2}" = "remove" ]
 			then
 				ADDRESS=$(<"${WGCCONFDIR}address")
 			else
-				ADDRESS=$(echo $WG_NETWORK|cut -d'.' -f1)'.'$(echo $WG_NETWORK|cut -d'.' -f2)'.'$(echo $WG_NETWORK|cut -d'.' -f3)'.'
-				WGSFILE=$(<${WGSCONF})
+				ADDRESS=$(echo $WG_IFACE_NTWRK|cut -d'.' -f1)'.'$(echo $WG_IFACE_NTWRK|cut -d'.' -f2)'.'$(echo $WG_IFACE_NTWRK|cut -d'.' -f3)'.'
+				WGSFILE=$(<${WGSCONFPATH})
 				while echo "${WGSFILE}"|grep -q "${ADDRESS}${WG_ADDRESS_RANGE_BEG}"
 					do
 						if [ $WG_ADDRESS_RANGE_BEG -eq $WG_ADDRESS_RANGE_END ]
@@ -273,27 +357,27 @@ if [ "${2}" = "remove" ]
 				WGCFILE="[Interface]\n\
 PrivateKey = $PRIVKEY\n\
 PublicKey = $PUBLKEY\n\
-Address = $ADDRESS/$(echo $WG_NETWORK|cut -d'/' -f2)\n\
+Address = $ADDRESS/$(echo $WG_IFACE_NTWRK|cut -d'/' -f2)\n\
 \n\
 [Peer]\n\
 PublicKey = $SPUBLKEY\n\
-AllowedIPs = $WG_NETWORK\n\
-Endpoint = $ENDPOINT_HOSTNAME_OR_WANIP:$ENDPOINT_PORT"
+AllowedIPs = $WG_IFACE_NTWRK\n\
+Endpoint = $WG_ENDPOINT:$WG_ENDPOINT_PORT"
 				printf "${WGCFILE}" > ${WGCCONF}
 			else
 				WGCFILE=$(<"${WGCCONF}")
 			fi
-		if grep -q "$ADDRESS" ${WGSCONF} && [ "${2}" = "new" ]
+		if grep -q "$ADDRESS" ${WGSCONFPATH} && [ "${2}" = "new" ]
 			then
-				rm -f ${WGSCONF}
-				WGSCONFCREATE
-		elif ! grep -q "$ADDRESS" ${WGSCONF}
+				rm -f ${WGSCONFPATH}
+				WGSCONFPATHCREATE
+		elif ! grep -q "$ADDRESS" ${WGSCONFPATH}
 			then
 				printf "\n\
 \n\
 [Peer]\n\
 PublicKey = $PUBLKEY\n\
-AllowedIPs = $ADDRESS/32" >> ${WGSCONF}
+AllowedIPs = $ADDRESS/32" >> ${WGSCONFPATH}
 			fi
 		WGSLIVE ${2} ${3}
 		printf "${WGCFILE}\n"
