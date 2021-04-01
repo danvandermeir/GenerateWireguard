@@ -1,4 +1,6 @@
 #!/bin/bash
+#if wireguard is non-standard this is the directory it will check for configuration files
+WGDIR=''
 
 #what VPN peers/"clients" connect to
 #if blank attempts to determine WAN IP and changes all client config files if WAN IP has changed
@@ -49,35 +51,62 @@ LIVE:\n\
 		exit
 	fi
 
-#IF $WG_IFACE_NAME UNSET DETERMINES WIREGAURD INTERFACE NAME FROM SCRIPT NAME (wireguard_X) OR CREATES NEW DEFAULT WIREGAURD INTERFACE (wgX) WITH CONFIGURATION FILES
-#VERIFY SCRIPT NAME AND WIREGUARD INTERFACE CONFIGURATION FILE
-WGDIR='/etc/wireguard/'
+#VERIFY EXISTANCE OF REQUIRED BINARIES/APPLICATIONS
+if ! command -v wg &>/dev/null
+	then
+		printf "Wireguard not available! No path or wrong path? Installed?\n" 1>&2
+		exit 1
+	fi
+
+#MAKE SURE WE KNOW WHERE WIREGUARD IS
+#SANITIZE INPUT
+if [ -z $WGDIR ] || [ ! -d "$WGDIR" ]
+	then
+		if [ -d "/etc/wireguard" ]
+			then
+				WGDIR='/etc/wireguard/'
+			else
+				printf "WGDIR variable incorrect! Modify $WGSCRIPTPATH script!\n" 1>&2
+				exit 1
+			fi
+	else
+		WGDIR="$WGDIR/"
+		WGDIR="${WGDIR//\/\//\/}"
+	fi
+
+#DETERMINE WIREGAURD INTERFACE NAME FROM SCRIPT NAME (wireguard_X), SCRIPT PATH, OR CREATES NEW DEFAULT WIREGAURD INTERFACE (wgX) WITH CONFIGURATION FILES
+#VERIFY SCRIPT NAME
 WGSCRIPTWRITE () {
 	WGSCRIPTPATH_NEW="$1$3/generatewg_$3"
-	if [ ! -f "$1/$3/generatewg_$3" ]
+	if [ ! -f "$WGSCRIPTPATH_NEW" ]
 		then
 			if [ ! -d "$1/$3" ]
 				then
-					mkdir "$1/$3"
+					mkdir -p "$1/$3"
 				fi
-			cp "$2" "$1/$3/generatewg_$3"
-			chmod 744 "$1/$3/generatewg_$3"
-			printf "Script copied to $1/$3/generatewg_$3!\n"
+			cp "$2" "$WGSCRIPTPATH_NEW"
+			chmod 744 "$WGSCRIPTPATH_NEW"
+			printf "Script copied to $WGSCRIPTPATH_NEW!\n"
 		fi
-	printf "Use $1/$3/generatewg_$3 instead! Script can be moved.\n"
+	printf "Use $WGSCRIPTPATH_NEW instead! Script can be moved.\n"
 }
 if [ -z $WG_IFACE_NAME ]
 	then
 		if [ ! "$WGSCRIPTNAME" = "wireguard_" ] && [[ "$WGSCRIPTPATH" == "wireguard_"* ]]
 			then
 				WG_IFACE_NAME="$(printf \"${WGSCRIPTPATH}\"|rev|cut -d'_' -f1|rev)"
+		elif [[ "$WGSCRIPTPATH" == "$WGDIR"* ]] && [ ! "$WGSCRIPTPATH" = "$WGDIR$WGSCRIPTNAME" ]
+			then
+				WG_IFACE_NAME="${WGSCRIPTPATH//$WGDIR/}"
+				WG_IFACE_NAME="$(printf \"$WG_IFACE_NAME\"|cut -d'/' -f1)"
+				WGSCRIPTWRITE "$WGDIR" "$WGSCRIPTPATH" "$WG_IFACE_NAME"
 			else
 				for x in {0..100}
 					do
 						if [ ! -d /sys/class/net/wg${x} ] && [ ! -f ${WGDIR}wg${x}/generatewg_wg${x} ]
 							then
 								WG_IFACE_NAME="wg$x"
-								printf "Script WG_IFACE_NAME variable not set and script name has no hints!\n\
+								printf "Script WG_IFACE_NAME variable not set! Script name and path have no hints!\n\
 WG_IFACE_NAME set to ${WG_IFACE_NAME}!\n" 1>&2
 								WGSCRIPTWRITE "$WGDIR" "$WGSCRIPTPATH" "$WG_IFACE_NAME"
 								WRITEWGSCONF=true
@@ -85,12 +114,11 @@ WG_IFACE_NAME set to ${WG_IFACE_NAME}!\n" 1>&2
 							fi
 					done
 			fi
-	else
-		if [ ! "$WGSCRIPTNAME" = "wireguard_$WG_IFACE_NAME" ]
-			then
-				printf "Script name is improper!\n" 1>&2
-				WGSCRIPTWRITE "$WGDIR" "$WGSCRIPTPATH" "$WG_IFACE_NAME"
-			fi
+	elif [ ! "$WGSCRIPTNAME" = "wireguard_$WG_IFACE_NAME" ]
+		then
+			printf "Script name is improper!\n" 1>&2
+			WGSCRIPTWRITE "$WGDIR" "$WGSCRIPTPATH" "$WG_IFACE_NAME"
+		fi
 	fi
 
 #SET VARIABLES AND LOAD WIREGAURD INTERFACE CONFIGURATION FILE TO MEMORY OR CREATE IT
@@ -116,7 +144,13 @@ if [ -z $WG_IFACE_NTWRK ]
 					WG_IFACE_NTWRK=$(ip route list default|rev|cut -d' ' -f1|rev)
 					WG_IFACE_NTWRK=$(ip route list|grep "${WG_IFACE_NTWRK}"|grep -v default|cut -d' ' -f1)
 
-					WG_ADDRESS_RANGE_BEG=$(printf "${WG_IFACE_NTWRK}"|cut -d'/' -f1)|cut -d'.' -f3
+					WG_ADDRESS_RANGE_BEG=$(printf "${WG_IFACE_NTWRK}"|cut -d'/' -f2)
+					WG_ADDRESS_RANGE_END="24"
+					printf "Script WG_IFACE_NTWRK variable not set!\n"
+					if [ $WG_ADDRESS_RANGE_BEG -lt $WG_ADDRESS_RANGE_END ]
+						then
+							WG_ADDRESS_RANGE_END=$(( WG_ADDRESS_RANGE_END - 8 ))
+						fi
 					WG_ADDRESS_RANGE_BEG=$(( WG_ADDRESS_RANGE_BEG + 1 ))
 					WG_ADDRESS_RANGE_END=$(printf "${WG_IFACE_NTWRK}"|cut -d'/' -f2)
 					printf "Script variable WG_IFACE_NTWRK not set!\n" 1>&2
