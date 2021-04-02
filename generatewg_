@@ -1,5 +1,5 @@
 #!/bin/bash
-#if wireguard is non-standard this is the directory it will check for configuration files
+#if set wireguard is non-standard and this is the directory it will check for configuration files
 WGDIR=''
 
 #what VPN peers/"clients" connect to
@@ -16,6 +16,9 @@ WG_IFACE_NAME=''
 #handles only single subnet in form X.X.X.X/X
 #if blank checks for default LAN and uses next ascending available third octet with lowest available fourth octet
 WG_IFACE_NTWRK=''
+#"client"/peer ip range
+WG_ADDRESS_RANGE_BEG=''
+WG_ADDRESS_RANGE_END=''
 
 #attempt to connect VPN network to default LAN if true
 WG_IFACE_NTWRK_ISOLATE=false
@@ -132,7 +135,7 @@ if [ -f ${WGSCONFPATH} ]
 		WRITEWGSCONF=true
 	fi
 
-#DETERMINE WIREGAURD INTERFACE IP AND NETWORK FROM SENTINAL FILES, CONFIGURATION FILE, OR CREATE NEW FROM DEFAULT LAN AS TEMPLATE
+#DETERMINE WIREGAURD INTERFACE IP AND NETWORK FROM SENTINAL FILES, CONFIGURATION FILE, OR CREATE NEW FROM DEFAULT LAN AS TEMPLATE (X.X.Y.1/24)
 #VERIFY SENTINAL AND CONFIGURATION FILE CONTINUITY AGAINST SCRIPT SETTING, IF CHANGED MODIFIES ALL "CLIENT"/PEER CONFIGURATION FILES TO MATCH
 if [ -z $WG_IFACE_NTWRK ]
 	then
@@ -143,76 +146,90 @@ if [ -z $WG_IFACE_NTWRK ]
 			if [ -z $WGSCONF ]
 				then
 					printf "Script WG_IFACE_NTWRK variable not set!\n"
-					WG_IFACE_NTWRK=$(ip route list default|rev|cut -d' ' -f1|rev)
-					WG_IFACE_NTWRK=$(ip route list|grep "$WG_IFACE_NTWRK"|grep -v default|cut -d' ' -f1)
-					WG_ADDRESS_RANGE_BEG=$(cut -d'/' -f2 <<< $WG_IFACE_NTWRK)
+					WG_IFACE_NTWRK=$(ip route show default|rev|cut -d' ' -f1|rev)
+					WG_IFACE_NTWRK=$(ip address show "$WG_IFACE_NTWRK"|grep 'inet '|cut -d' ' -f6|cut -d'/' -f1)
+					WG_ADDRESS_RANGE_BEG=$(cut -d'.' -f3 <<< $WG_IFACE_NTWRK)
+					WG_IFACE_NTWRK="${WG_IFACE_NTWRK//.$WG_ADDRESS_RANGE_BEG./..}"
+					WG_ADDRESS_RANGE_BEG=$(cut -d'.' -f4 <<< $WG_IFACE_NTWRK)
+					WG_IFACE_NTWRK=${WG_IFACE_NTWRK%$WG_ADDRESS_RANGE_BEG}
+					WG_ADDRESS_RANGE_BEG=0
 					WG_ADDRESS_RANGE_END=0
-					while [ $WG_ADDRESS_RANGE_BEG -gt 7 ]
+					while [ $WG_ADDRESS_RANGE_END -ne 256 ]
 						do
-							WG_ADDRESS_RANGE_BEG=$(( WG_ADDRESS_RANGE_BEG - 8 ))
-							WG_ADDRESS_RANGE_END=$(( WG_ADDRESS_RANGE_END + 1 ))
-						done
-					if [ $WG_ADDRESS_RANGE_END -eq 4 ]
-						then
-							printf "Can not determine good network from default LAN!\n" 1>&2
-							exit 1
-						fi
-					WG_ADDRESS_RANGE_END=$(cut -d'.' -f${WG_ADDRESS_RANGE_END} <<< $WG_IFACE_NTWRK)
-					WG_IFACE_NTWRK="${WG_IFACE_NTWRK//.$WG_ADDRESS_RANGE_END./..}"
-					####CURRENT
-					while ip route list "${WG_IFACE_NTWRK//../.$WG_ADDRESS_RANGE_END.}"|grep -q '/'
-						do
-							if [ $WG_ADDRESS_RANGE_END -eq 254]
+							if ! ip route get "${WG_IFACE_NTWRK//../.$WG_ADDRESS_RANGE_BEG.}$WG_ADDRESS_RANGE_END"|grep -q 'via'
 								then
-									G_ADDRESS_RANGE_END=0
-								fi
-							WG_ADDRESS_RANGE_END=$(( WG_ADDRESS_RANGE_END + 1 ))
+									if [ $WG_ADDRESS_RANGE_BEG -eq 255 ]
+										then
+											printf "Can not determine good network from default LAN!\n" 1>&2
+											exit 1
+										fi
+									WG_ADDRESS_RANGE_BEG=$(( WG_ADDRESS_RANGE_BEG + 1 ))
+									WG_ADDRESS_RANGE_END=0
+								else
+									WG_ADDRESS_RANGE_END=$(( WG_ADDRESS_RANGE_END + 1 ))
 								fi
 						done
-							WG_ADDRESS_RANGE_END=
-					printf "Script variable WG_IFACE_NTWRK not set!\n" 1>&2
-					WRITEWGSCONF=true
+					WG_IFACE_NTWRK="${WG_IFACE_NTWRK//../.$WG_ADDRESS_RANGE_BEG.}1/24"
+					WG_ADDRESS_RANGE_BEG=2
+					WG_ADDRESS_RANGE_END=254
+					print "$WG_IFACE_NTWRK" > ${WGSDIR}address
+					print "$WG_ADDRESS_RANGE_BEG" > ${WGSDIR}begin
+					print "$WG_ADDRESS_RANGE_END" > ${WGSDIR}end
+					printf "WG_IFACE_NTWRK set to $WG_IFACE_NTWRK!\n\
+WG_ADDRESS_RANGE_BEG set to $WG_ADDRESS_RANGE_BEG!\n\
+WG_ADDRESS_RANGE_END set to $WG_ADDRESS_RANGE_END!\n"
 				else
 					WG_IFACE_NTWRK=$(grep 'Address = ' <<< "${WGSCONF}"|rev|cut -d' ' -f1|rev)
 				fi
 			printf "${WG_IFACE_NTWRK}">"${WGSDIR}address"
 		fi
-	else
-		if [ -f ${WGSDIR}address ] && [ ! "$(<${WGSDIR}address)" = "${WG_IFACE_NTWRK}" ]
-			then
-				WG_IFACE_NTWRK=$(<"${WGSDIR}address")
-
-			fi
+elif [ ! -f ${WGSDIR}address ] || [ ! "$(<${WGSDIR}address)" = "$WG_IFACE_NTWRK" ]
+	then
+		print "$WG_IFACE_NTWRK" > ${WGSDIR}address
 	fi
-if
-	if [[ "${WG_IFACE_NTWRK}" == *"/"* ]]
-		then
-			WG_ADDRESS_RANGE_BEG=
-		fi
+
+#DETERMINE WIREGAURD "CLIENT"/PEER RANGE BEGINING
 if [ -z $WG_ADDRESS_RANGE_BEG ]
 	then
-		if [ -f ${WGSDIR}address ]
+		if [ -f ${WGSDIR}begin ]
 			then
-				WG_IFACE_NTWRK=$(<"${WGSDIR}address")
-		elif [ ! -z $WGSCONF ]
-			then
-				WG_IFACE_NTWRK=$(grep 'Address = ' <<< "${WGSCONF}"|rev|cut -d' ' -f1|rev)
+				WG_ADDRESS_RANGE_BEG=$(<"${WGSDIR}begin")
 			else
-				WG_IFACE_NTWRK=$(ip route list default|rev|cut -d' ' -f1|rev)
-				WG_IFACE_NTWRK=$(ip route list|grep "${WG_IFACE_NTWRK}"|grep -v default|cut -d' ' -f1)
-				printf "Script variable WG_IFACE_NTWRK not set!\n" 1>&2
+				if [ -z $WGSCONF ]
+					then
+						printf "Script WG_ADDRESS_RANGE_BEG variable not set!\n" 1>&2
+						WG_ADDRESS_RANGE_BEG=$(cut -d'/' -f2 <<< "${WG_IFACE_NTWRK}")
+						WG_ADDRESS_RANGE_BEG=$(( 32-WG_ADDRESS_RANGE_BEG ))
+						WG_ADDRESS_RANGE_BEG=$(( 2**WG_ADDRESS_RANGE_BEG ))
+						WG_ADDRESS_RANGE_END=$(( WG_ADDRESS_RANGE_BEG-1 ))
+						while [ $WG_ADDRESS_RANGE_END -lt $WG_ADDRESS_RANGE_BEG ]
+							do
+								if [ $(( WG_ADDRESS_RANGE_END + 1 )) -eq WGSCONF ]
+									then
+										####CONTINUE
+									fi
+								WG_ADDRESS_RANGE_END=$(( WG_ADDRESS_RANGE_END + WG_ADDRESS_RANGE_BEG ))
+							done
+						if [ $WG_ADDRESS_RANGE_END -eq 255 ]
+							then
+								printf "Script could not determine netwok address range start for \"clients\"/peers!\n"
+								exit 1
+							fi
+						print "$WG_ADDRESS_RANGE_BEG" > ${WGSDIR}begin
+					else
+						WG_ADDRESS_RANGE_BEG=$(grep 'RangeBegin = ' <<< "${WGSCONF}"|rev|cut -d' ' -f1|rev)
+					fi
 			fi
-		printf "Script variable WG_ADDRESS_RANGE_BEG not set!\n" 1>&2
-		exit 1
+elif [ ! -f ${WGSDIR}begin ] || [ ! "$(<${WGSDIR}begin)" = "$WG_ADDRESS_RANGE_BEG" ]
+	then
+		print "$WG_ADDRESS_RANGE_BEG" > ${WGSDIR}begin
 	fi
+
+
 if [ -z $WG_ADDRESS_RANGE_END ]
 	then
 		printf "Script variable WG_ADDRESS_RANGE_END not set!\n" 1>&2
 		exit 1
-	fi
-if [ -z $WG_ENDPOINT_PORT ]
-	then
-		WG_ENDPOINT_PORT="51820"
 	fi
 if [ -f ${WGSCONFPATH}privatekey ]
 	then
@@ -227,6 +244,10 @@ if [ -f ${WGSCONFPATH}publickey ]
 	else
 		SPUBLKEY=$(printf "${SPRIVKEY}" | wg pubkey)
 		printf "${SPUBLKEY}" > ${WGSDIR}publickey
+	fi
+if [ -z $WG_ENDPOINT_PORT ]
+	then
+		WG_ENDPOINT_PORT="51820"
 	fi
 if [ -z $WG_ENDPOINT ]
 	then
