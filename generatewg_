@@ -13,7 +13,7 @@ WG_IFACE_NAME=''
 #CIDR format only: X.X.X.X/X
 #if blank checks for default LAN and uses next ascending available third octet with lowest available fourth octet
 WG_IFACE_NTWRK=''
-#peer ip range
+#peer ip range, ascending order
 WG_ADDRESS_RANGE_BEG=''
 WG_ADDRESS_RANGE_END=''
 
@@ -21,11 +21,16 @@ WG_ADDRESS_RANGE_END=''
 WG_IFACE_NTWRK_ISOLATE=false
 #pass "all" peer traffic through VPN and NAT to default LAN if true, above must be false
 WG_IFACE_NTWRK_GATEWAY=false
-#gives peers a DNS server to use if not blank, above must be true
-#if using a VPN to pass all traffic you absolutely should consider a "safe" DNS server
+
+#
+WG_DNS_SEND=false
+#gives peers the system default DNS server to use if blank, above must be true
+#if using a VPN to pass all traffic a "safe" DNS server should absolutely be considered
 WG_DNS=''
 
+#######################################################################################
 ########## DO NOT EDIT BELOW SCRIPT UNLESS YOU KNOW WHAT YOU'RE DOING, KTHNX ##########
+#######################################################################################
 WRITEWGSCONF=false
 WGSCRIPTNAME="${0##*/}"
 WGSCRIPTPATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
