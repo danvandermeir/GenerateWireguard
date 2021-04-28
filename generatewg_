@@ -99,6 +99,7 @@ elif [ ! "$WGSCRIPTNAME" = "wireguard_$WG_IFACE_NAME" ]; then
 fi
 
 #LOAD WIREGAURD INTERFACE CONFIGURATION FILE TO MEMORY AND SET VARIABLES OR CREATE FILE
+#VERIFY CONFIGURATION FILE CONTINUITY AGAINST SCRIPT SETTINGS, IF DIFFERENT AND CHANGES ACCEPTED BY USER MODIFIES CONFIGURATION FILE TO MATCH SCRIPT
 WGSCONFFULLPATH="/etc/wireguard/$WG_IFACE_NAME.conf"
 WGC="${1// }"
 WGCCONFDIR="$WGSDIR$1/"
@@ -110,8 +111,6 @@ if [ -f ${WGSCONFFULLPATH} ]; then
 			case $x in
 				\[Peer]*)
 					break;;
-				\#PrivateKey = *)
-					[ -z $WGC_PRIKEY ] && WGC_PRIKEY=${x#\#PrivateKey = };;
 				PublicKey = *)
 					[ -z $WGC_PUBKEY ] &&  WGC_PUBKEY=${x#PublicKey = };;
 				PresharedKey = *)
@@ -146,14 +145,15 @@ else
 	WRITEWGSCONF=true
 fi
 
-#DETERMINE WIREGAURD INTERFACE IP AND NETWORK FROM SENTINAL FILES, CONFIGURATION FILE, OR CREATE NEW FROM DEFAULT LAN AS TEMPLATE (X.X.Y.1/24)
-#VERIFY SENTINAL AND CONFIGURATION FILE CONTINUITY AGAINST SCRIPT SETTING, IF CHANGED MODIFIES ALL "CLIENT"/PEER CONFIGURATION FILES TO MATCH
+#VERIFY WIREGAURD INTERFACE IP, OR CREATE NEW WIREGUARD NETWORK FROM DEFAULT "LAN" INTERFACE AS TEMPLATE
 cidrtomask() {
-	if [ -z $1 ] || [[ $1 =~ ^[0-9]+$ ]]; then
+	if [ -z $1 ] || [[ $1 =~ ^[0-9]+2 ]]; then
 		printf "CIDR bit length not provided to cidrtomask function!\n" 1>&2
 		exit 1
 	fi
-	local i='' mask='' full_octets=$(($1/8)) partial_octet=$(($1%8))
+	local i mask full_octets partial_octet
+	full_octets=$(($1/8))
+	partial_octet=$(($1%8))
 	for ((i=0;i<4;i+=1)); do
 		if [ $i -lt $full_octets ]; then
 			mask+=255
@@ -161,7 +161,7 @@ cidrtomask() {
 			mask+=$((256 - 2**(8-$partial_octet)))
 		else
 			mask+=0
-		fi  
+		fi
 		test $i -lt 3 && mask+=.
 	done
 	printf "$mask"
@@ -171,33 +171,37 @@ networkmin() {
 		printf "CIDR network not provided to networkmin function!\n" 1>&2
 		exit 1
 	fi
-	local i1='' i2='' i3='' i4='' m1='' m2='' m3='' m4=''
+	local i1 i2 i3 i4 m1 m2 m3 m4
 	IFS=. read -r i1 i2 i3 i4<<<"${1%/*}"
 	IFS=. read -r m1 m2 m3 m4<<<"$(cidrtomask ${1#*/})"
-	printf "%d.%d.%d.%d" "$((i1 & m1))" "$((i2 & m2))" "$((i3 & m3))" "$(( ( i4 & m4 ) + 1 ))"
+	i1=$((i1 & m1))
+	i2=$((i2 & m2))
+	i3=$((i3 & m3))
+	i4=$((i4 & m4))
+	printf "$a1.$a2.$a3.$a4"
 }
 networkmax() {
-	if [ -z $1 ] || [[ *"/"* != "$1" ]]; then
+	if [ -z $1 ] || [[ !  "$1" == *"/"* ]]; then
 		printf "CIDR network not provided to networkmax function!\n" 1>&2
 		exit 1
 	fi
-	local i1='' i2='' i3='' i4='' m1='' m2='' m3='' m4=''
+	local i1 i2 i3 i4 m1 m2 m3 m4
 	IFS=. read -r i1 i2 i3 i4<<<"${1%/*}"
 	IFS=. read -r m1 m2 m3 m4<<<"$(cidrtomask ${1#*/})"
-	printf "%d.%d.%d.%d" "$(( ( 255 ^ m1 ) | i1 ))" "$(( ( 255 ^ m2 ) | i2 ))" "$(( ( 255 ^ m3 ) | i3 ))" "$(( ( ( 255 ^ m4 ) | i4 ) - 1 ))"
+	i1=$(( ( 255 ^ m1 ) | i1 ))
+	i2=$(( ( 255 ^ m2 ) | i2 ))
+	i3=$(( ( 255 ^ m3 ) | i3 ))
+	i4=$(( ( 255 ^ m4 ) | i4 ))
+	printf "$i1.$i2.$i3.$i4"
 }
 clientconfignetwork() {
-	#WARNING!!!! This function has the potential to "guess" prior existing networks based on "client"/peer configurations wrong!
-	local a1='' a2='' a3='' a4='' a5='' check='' lowest='' highest='' laddress='' haddress='' address=''
-	if [ -f $WGSCONF ]; then
+	#WARNING!!!! This function has the potential to "guess" prior existing networks based on peer configurations wrong!
+	local a1 a2 a3 a4 a5 check lowest highest laddress haddress address
+	if [ -n "$WGSCONF" ]; then
 		while IFS="" read -r x || [ -n "$x" ]; do
-			[[ "$x" == "AllowedIPs = "* ]] && a1=${x#AllowedIPs = } && a1=${a1%%,*} && a1=${a1// }
-			[[ "$x" == "Address = "* ]] && address=${x#Address = } && address=${address%%,*} && address=${address// }
-			[[ "$x" == "#RangeBeg = "* ]] && [ -z $WG_ADDRESS_RANGE_BEG ] && WG_ADDRESS_RANGE_BEG=${x#RangeBeg = } && WG_ADDRESS_RANGE_BEG=${WG_ADDRESS_RANGE_BEG// } && laddress=$WG_ADDRESS_RANGE_BEG
-			[[ "$x" == "#RangeEnd = "* ]] && [ -z $WG_ADDRESS_RANGE_END ] && WG_ADDRESS_RANGE_END=${x#RangeEnd = } && WG_ADDRESS_RANGE_END=${WG_ADDRESS_RANGE_END// } && haddress=$WG_ADDRESS_RANGE_END
-			[ -n "$address" ] && [ -n "$WG_ADDRESS_RANGE_BEG" ] && [ -n "$WG_ADDRESS_RANGE_END" ] && break
+			[[ "$x" == "AllowedIPs = "* ]] && a1=${x//[!0-9\,\/\.]} && a1=${a1%%,*}
 			if [ -n "$a1" ]; then
-				a5="${a1#*/}"
+				a5=${a1#*/}
 				IFS=. read -r a1 a2 a3 a4<<<"${a1%/*}"
 				check=$(( a1 + a2 + a3 + a4 ))
 				if [ -z $lowest ]; then
@@ -217,230 +221,166 @@ clientconfignetwork() {
 			fi
 		done < <(WGSCONF)
 		if [ -z $lowest ]; then
-			printf 'clientconfignetwork function could not determine any client configurations!\n' 1>&2
-			return
+			printf 'clientconfignetwork function could not determine any peer configurations!\n' 1>&2
+			return 1
 		elif [ $lowest = $highest ]; then
-			printf 'clientconfignetwork function could not determine network range from client configurations!\n' 1>&2
-			return
+			printf 'clientconfignetwork function could not determine network range from peer configurations!\n' 1>&2
+			return 1
 		else
 			lowest=$(networkmin "$laddress")
-			a5=${laddress#*/}
 			if [ "$lowest" = "$(networkmin $haddress)" ]; then
-				highest=$(networkmax "$haddress")
-				if [ -z $address ]; then
-					IFS=. read -r a1 a2 a3 a4 <<<"${laddress%/*}"
-					if [ "$a1.$a2.$a3.$(( a4 - 2 ))" = "$lowest" ]; then
+				a5=${laddress#*/}
+				IFS=. read -r a1 a2 a3 a4 <<<"${lowest%/*}"
+				if [ "$a1.$a2.$a3.$(( a4 + 2 ))/$a5" = "$laddress" ]; then
+					address="$a1.$a2.$a3.$(( a4 + 1 ))/$a5"
+				else
+					highest=$(networkmax "$haddress")
+					IFS=. read -r a1 a2 a3 a4 <<<"${highest%/*}"
+					if [ "$a1.$a2.$a3.$(( a4 - 2 ))/$a5" = "$haddress" ]; then
 						address="$a1.$a2.$a3.$(( a4 - 1 ))/$a5"
 					else
-						IFS=. read -r a1 a2 a3 a4 <<<"${haddress%/*}"
-						if [ "$a1.$a2.$a3.$(( a4 + 2 ))" = "$highest" ]; then
-							address="$a1.$a2.$a3.$(( a4 + 1 ))/$a5"
-						else
-							printf 'clientconfignetwork function could not determine an interface address!' 1>&2
-							return
-						fi
+						printf 'clientconfignetwork function could not determine a contigous network! Interface and peer range are not adjacent!\n' 1>&2
+						return 1
 					fi
 				fi
 				IFS=. read -r a1 a2 a3 a4 <<<"${lowest%/*}"
-				lowest="$a1.$a2.$a3.$(( a4 + 1 ))/$a5"
-				IFS=. read -r a1 a2 a3 a4 <<<"${laddress%/*}"
-				a4=$(( a4 - 1 ))
-				if [ $a4 -eq $a5 ]; then
-					address=
-				else
-					IFS=. read -r a1 a2 a3 a4 <<<"${laddress%/*}"
-					a4=$(( a4 + 1 ))
-					if [ $a4 -eq $a5 ]; then
-
-					else
-						printf 'clientconfignetwork function could not determine a contigous network! Interfare and clients are not adjacent!\n' 1>&2
-						return
-					fi
-				fi
-				if [ -n "$address" ] && [ ! "$lowest" = "$(networkmin $address)" ]; then
-				fi
-
-
-
-				if [[ *"via"* == "$highest" ]]; then
-					a5="${lowest##*.}"
-					a5=$(( a5 + 1 ))
-					IFS=. read -r a1 a2 a3 a4 <<<"${lowest%/*}"
-					if [ $a5 = $a4 ]; then
-						address=$lowest
-					else
-						IFS=. read -r a1 a2 a3 a4 <<< "$highest"
-						a5=$(( a4 - 1 ))
-						IFS=. read -r a1 a2 a3 a4 <<< $(cut -d'/' -f1 <<< "$haddress")
-						if [ $a5 = $a4]; then
-							address=$highest
-						else
-							printf 'clientconfignetwork function could not determine Wiregaurd network!\n' 1>&2
-							return
-						fi
-					fi
-				else
-					printf 'clientconfignetwork function determined a network that is in use!\n' 1>&2
-					return
-				fi
 			else
-				printf 'clientconfignetwork function could not determine a contigous network! The clients are not in the same network!\n' 1>&2
-				return
+				printf 'clientconfignetwork function could not determine a contigous network! The discovered peers were not in the same network!\n' 1>&2
+				return 1
 			fi
 		fi
 	else
 		printf 'No Wiregaurd server configuration for clientconfignetwork function!\n' 1>&2
-		return
+		return 1
 	fi
 	printf "$address,$laddress,$haddress"
 }
-if [ -z $WG_IFACE_NTWRK ]; then
-	if [ -n "$WGSCONF" ]; then
-		WGCCONF=$(clientconfignetwork)
-		if [[ *"/"* == "$WGSCONF" ]]; then
-			WG_IFACE_NTWRK="${WGSCONF%%,*}"
-			[ -z $WG_ADDRESS_RANGE_BEG ] && WG_ADDRESS_RANGE_BEG="${WGSCONF#*,}" && WG_ADDRESS_RANGE_BEG="${WG_ADDRESS_RANGE_BEG%,*}"
-			[ -z $WG_ADDRESS_RANGE_END ] && WG_ADDRESS_RANGE_END="${WGSCONF##*,}"
-		else
-			printf "Generating new network for Wiregaurd interface!"
-		fi
-	else
-		WG_ADDRESS_RANGE_BEG=$(networkmin "$WG_IFACE_NTWRK")
-		if 
-		WG_ADDRESS_RANGE_END=$(networkmax "$WG_IFACE_NTWRK")
-	fi
-
-x="PrivateKey = 1.1.1.1/24, 2.2.2.2-32,3.3.3.3/20"; echo "${x//[!0-9,/]}"
-
-
-#clientconfignetwork check server config file?
-#bitwise push CIDR mask to a mask with matching end bit
-
-				while [ ! "$address" = "$highest" ]; do
-					a5="$(ip route get $address)"
-					if [[ *"via"* == "$a5" ]]; then
-						IFS=. read -r a1 a2 a3 a4 <<<"$address"
-						if [ $a4 -eq 255 ]; then
-							a4=0
-						else
-
-						fi
-					else
-
-					fi
-				done
-
-
-
-							WG_IFACE_NTWRK=$(???)
-							WG_ADDRESS_RANGE_BEG=$(networkmin "$WG_IFACE_NTWRK")
-							WG_ADDRESS_RANGE_END=$(networkmax "$WG_IFACE_NTWRK")
-					printf "Script WG_IFACE_NTWRK variable not set!\n"
-					WG_IFACE_NTWRK=$(ip route show default|rev|cut -d' ' -f1|rev)
-					WG_IFACE_NTWRK=$(ip address show "$WG_IFACE_NTWRK"|grep 'inet '|cut -d' ' -f6)
-					WG_IFACE_NTWRK="${WG_IFACE_NTWRK//.$WG_ADDRESS_RANGE_BEG./..}"
-					WG_ADDRESS_RANGE_BEG=$(cut -d'.' -f4 <<< $WG_IFACE_NTWRK)
-					WG_IFACE_NTWRK=${WG_IFACE_NTWRK%$WG_ADDRESS_RANGE_BEG}
-					WG_ADDRESS_RANGE_BEG=0
-					WG_ADDRESS_RANGE_END=0
-					while [ $WG_ADDRESS_RANGE_END -ne 256 ]
-						do
-							if ! ip route get "${WG_IFACE_NTWRK//../.$WG_ADDRESS_RANGE_BEG.}$WG_ADDRESS_RANGE_END"|grep -q 'via'
-								then
-									if [ $WG_ADDRESS_RANGE_BEG -eq 255 ]
-										then
-											printf "Can not determine good network from default LAN!\n" 1>&2
-											exit 1
-										fi
-									WG_ADDRESS_RANGE_BEG=$(( WG_ADDRESS_RANGE_BEG + 1 ))
-									WG_ADDRESS_RANGE_END=0
-								else
-									WG_ADDRESS_RANGE_END=$(( WG_ADDRESS_RANGE_END + 1 ))
-								fi
-						done
-					WG_IFACE_NTWRK="${WG_IFACE_NTWRK//../.$WG_ADDRESS_RANGE_BEG.}1/24"
-					WG_ADDRESS_RANGE_BEG=2
-					WG_ADDRESS_RANGE_END=254
-					print "$WG_IFACE_NTWRK" > ${WGSDIR}address
-					print "$WG_ADDRESS_RANGE_BEG" > ${WGSDIR}begin
-					print "$WG_ADDRESS_RANGE_END" > ${WGSDIR}end
-					printf "WG_IFACE_NTWRK set to $WG_IFACE_NTWRK!\n\
-WG_ADDRESS_RANGE_BEG set to $WG_ADDRESS_RANGE_BEG!\n\
-WG_ADDRESS_RANGE_END set to $WG_ADDRESS_RANGE_END!\n"
-
-
-
-
-
-
-				else
-					WG_IFACE_NTWRK=$(grep 'Address = ' <<< "$WGSCONF"|rev|cut -d' ' -f1|rev)
-				fi
-			printf "${WG_IFACE_NTWRK}">"${WGSDIR}address"
-		fi
-elif [ ! -f ${WGSDIR}address ] || [ ! "$(<${WGSDIR}address)" = "$WG_IFACE_NTWRK" ]
-	then
-		print "$WG_IFACE_NTWRK" > ${WGSDIR}address
-	fi
-
-#DETERMINE WIREGAURD "CLIENT"/PEER RANGE BEGINING
-if [ -z $WG_ADDRESS_RANGE_BEG ]
-	then
-		if [ -f ${WGSDIR}begin ]
-			then
-				WG_ADDRESS_RANGE_BEG=$(<"${WGSDIR}begin")
-			else
-				if [ -z $WGSCONF ]
-					then
-						printf "Script WG_ADDRESS_RANGE_BEG variable not set!\n" 1>&2
-						WG_ADDRESS_RANGE_BEG=$(cut -d'/' -f2 <<< "${WG_IFACE_NTWRK}")
-						WG_ADDRESS_RANGE_BEG=$(( 32-WG_ADDRESS_RANGE_BEG ))
-						WG_ADDRESS_RANGE_BEG=$(( 2**WG_ADDRESS_RANGE_BEG ))
-						WG_ADDRESS_RANGE_END=$(( WG_ADDRESS_RANGE_BEG-1 ))
-						while [ $WG_ADDRESS_RANGE_END -lt $WG_ADDRESS_RANGE_BEG ]
-							do
-								if [ $(( WG_ADDRESS_RANGE_END + 1 )) -eq WGSCONF ]
-									then
-										####CONTINUE
-									fi
-								WG_ADDRESS_RANGE_END=$(( WG_ADDRESS_RANGE_END + WG_ADDRESS_RANGE_BEG ))
-							done
-						if [ $WG_ADDRESS_RANGE_END -eq 255 ]
-							then
-								printf "Script could not determine netwok address range start for \"clients\"/peers!\n"
-								exit 1
-							fi
-						print "$WG_ADDRESS_RANGE_BEG" > ${WGSDIR}begin
-					else
-						WG_ADDRESS_RANGE_BEG=$(grep 'RangeBegin = ' <<< "${WGSCONF}"|rev|cut -d' ' -f1|rev)
-					fi
-			fi
-elif [ ! -f ${WGSDIR}begin ] || [ ! "$(<${WGSDIR}begin)" = "$WG_ADDRESS_RANGE_BEG" ]
-	then
-		print "$WG_ADDRESS_RANGE_BEG" > ${WGSDIR}begin
-	fi
-
-if [ -z $WG_ADDRESS_RANGE_END ]
-	then
-		printf "Script variable WG_ADDRESS_RANGE_END not set!\n" 1>&2
+rangeunused() {
+	if [ -z $1 ] || [[ "$1" != *"/"* ]]; then
+		printf "CIDR network not provided to networkmax function!\n" 1>&2
 		exit 1
 	fi
-
-if [ -f ${WGSCONFPATH}privatekey ]
-	then
-		SPRIVKEY=$(<"${WGSDIR}privatekey")
-	else
-		SPRIVKEY=$(wg genkey)
-		printf "${SPRIVKEY}" > ${WGSDIR}privatekey
+	local a1 a2 a3 a4 a5 cur max address
+	IFS=. read -r a1 a2 a3 a4<<<"${1%/*}"
+	a5=${1#*/}
+	IFS=. read -r i1 i2 i3 i4<<<"$(networkmax $a1.$a2.$a3.$a4/$a5)"
+	max=$(( ( i1 << 24 ) + ( i2 << 16 ) + ( i3 << 8 ) + i4 ))
+	i1=$a1
+	i2=$a2
+	i3=$a3
+	i4=$a4
+	while [[ "$(ip route get $i1.$i2.$i3.$i4/$a5)" == *"via"* ]]; do
+		cur=$(( ( i1 << 24 ) + ( i2 << 16 ) + ( i3 << 8 ) + i4 ))
+		[ $cur -eq $max ] && return
+		i4=$(( i4 + 1 ))
+		[ $i4 -eq 256 ] && i4=0 && i3=$(( i3 + 1 ))
+		[ $i3 -eq 256 ] && i3=0 && i2=$(( i2 + 1 ))
+		[ $i2 -eq 256 ] && i2=0 && i1=$(( i1 + 1 ))
+		[ $ii -eq 256 ] && i1=0
+	done
+	return 1
+}
+generatenetwork() {
+	local a1 a2 a3 a4 a5 m1 m2 m3 m4
+	address=true
+	a5=$(ip route show default)
+	a5=${a5#* dev }
+	a5=${a5%% *}
+	a5=$(ip address show "$a5"|grep 'inet ')
+	a5=${a5#*inet }
+	a5=${a5%% *}
+	IFS=. read -r a1 a2 a3 a4<<<"${a5%/*}"
+	a5=${a5#*/}
+	IFS=. read -r m1 m2 m3 m4<<<"$(cidrtomask $a5)"
+	a1=$(( a1 & m1 ))
+	a2=$(( a2 & m2 ))
+	a3=$(( a3 & m3 ))
+	a4=$(( a4 & m4 ))
+	while rangeunused "$a1.$a2.$a3.$a4/$a5"; do
+		if [ $m4 -eq 0 ]; then
+			if [ $m3 -eq 0 ]; then
+				if [ $m2 -eq 0 ]; then
+					if [ $m1 -eq 0 ]; then
+						printf 'Function generatenetwork is unable to generate a network! Bad subnet!\n'
+						exit 1
+					else
+						a1=$(( a1 + 1 ))
+						[ $a1 -eq 256 ] && a1=0
+					fi
+				else
+					a2=$(( a4 + 1 ))
+					[ $a2 -eq 256 ] && a2=0
+				fi
+			else
+				a3=$(( a3 + 1 ))
+				[ $a3 -eq 256 ] && a3=0
+			fi
+		else
+			a4=$(( a4 + 1 ))
+			[ $a4 -eq 256 ] && a4=0
+		fi
+	done
+	printf "$a1.$a2.$a3.$(( a4 + 1 ))/$a5"
+}
+if [ -z $WG_IFACE_NTWRK ]; then
+	WRITEWGSCONF=true
+	WGCCONF=$(clientconfignetwork)
+	if [[ *"/"* == "$WGCCONF" ]]; then
+		printf "Attempting to generate Wireguard network from corrupted config file!\n" 1>&2
+		WG_IFACE_NTWRK="${WGSCONF%%,*}"
+		[ -z $WG_ADDRESS_RANGE_BEG ] && WG_ADDRESS_RANGE_BEG="${WGCCONF#*,}" && WG_ADDRESS_RANGE_BEG="${WG_ADDRESS_RANGE_BEG%,*}"
+		[ -z $WG_ADDRESS_RANGE_END ] && WG_ADDRESS_RANGE_END="${WGCCONF##*,}"
+		rangeunused "$WG_IFACE_NTWRK" || WG_IFACE_NTWRK=''
 	fi
-
-if [ -f ${WGSCONFPATH}publickey ]
-	then
-		SPUBLKEY=$(<"${WGSDIR}publickey")
-	else
-		SPUBLKEY=$(printf "${SPRIVKEY}" | wg pubkey)
-		printf "${SPUBLKEY}" > ${WGSDIR}publickey
+	if [ -z $WG_IFACE_NTWRK ]; then
+		printf "Generating new network for Wiregaurd interface!" 1>&2
+		WGCCONF=$(generatenetwork)
+		WG_IFACE_NTWRK="${WGSCONF%%,*}"
+		[ -z $WG_ADDRESS_RANGE_BEG ] && WG_ADDRESS_RANGE_BEG="${WGCCONF#*,}" && WG_ADDRESS_RANGE_BEG="${WG_ADDRESS_RANGE_BEG%,*}"
+		[ -z $WG_ADDRESS_RANGE_END ] && WG_ADDRESS_RANGE_END="${WGCCONF##*,}"
 	fi
+	if [ -z $WG_IFACE_NTWRK ]; then
+		printf "Failed to generate new network for Wiregaurd interface! Correct script begining variables to overide prior settings and rerun!" 1>&2
+		exit 1
+	fi
+fi
+
+#VERIFY WIREGAURD PEER RANGE BEGINING
+if [ -z $WG_ADDRESS_RANGE_BEG ]; then
+	WRITEWGSCONF=true
+	[ -z $WGCCONF ] && WGCCONF=$(clientconfignetwork)
+	if [[ *"/"* == "$WGCCONF" ]]; then
+		printf "Attempting to determine netwok address range start from corrupted config file!\n" 1>&2
+		WG_ADDRESS_RANGE_BEG=${WGCCONF#*,} && WG_ADDRESS_RANGE_BEG=${WG_ADDRESS_RANGE_BEG%,*}
+		[ -z $WG_ADDRESS_RANGE_END ] && WG_ADDRESS_RANGE_END="${WGCCONF##*,}"
+	fi
+fi
+if [ ! "$(networkmin $WG_IFACE_NTWRK)" = "$(networkmin $WG_ADDRESS_RANGE_BEG)" ]; then
+	printf "Address range start not in contigous network with Wiregaurd interface! Correct script begining variables to overide prior settings and rerun!" 1>&2
+	exit 1
+fi
+
+#VERIFY WIREGAURD PEER RANGE ENDING
+if [ -z $WG_ADDRESS_RANGE_END ]; then
+	WRITEWGSCONF=true
+	[ -z $WGCCONF ] && WGCCONF=$(clientconfignetwork)
+	if [[ *"/"* == "$WGCCONF" ]]; then
+		printf "Attempting to determine netwok address range end from corrupted config file!\n" 1>&2
+		WG_ADDRESS_RANGE_END="${WGCCONF##*,}"
+	fi
+fi
+if [ ! "$(networkmin $WG_IFACE_NTWRK)" = "$(networkmin $WG_ADDRESS_RANGE_END)" ]; then
+	printf "Address range end not in contigous network with Wiregaurd interface! Correct script begining variables to overide prior settings and rerun!" 1>&2
+	exit 1
+fi
+
+#VERIFY SERVER KEYS
+if [ -z $WGS_PRIKEY ]; then
+	printf "No Wireguard server private key! Generating new key!" 1>&2
+	WGS_PRIKEY=$(wg genkey)
+	WGS_PUBKEY=$(wg pubkey<<<"$WGS_PRIKEY")
+fi
+[ -z $WGS_PUBKEY ] && WGS_PUBKEY=$(wg pubkey<<<"$WGS_PRIKEY")
 
 if [ -z $WG_ENDPOINT_PORT ]
 	then
