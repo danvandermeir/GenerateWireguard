@@ -157,7 +157,6 @@ fi
 fi
 
 #VERIFY WIREGAURD INTERFACE IP, OR CREATE NEW WIREGUARD NETWORK FROM DEFAULT "LAN" INTERFACE AS TEMPLATE
-
 cidrtomask() {
 	if [ -z $1 ] || [[ ! $1 =~ ^[0-9]+$ ]] || [ $1 -lt 0 ] || [ $1 -gt 32 ]; then
 		printf "CIDR bit length not provided to cidrtomask function!\n" 1>&2
@@ -392,69 +391,51 @@ clientconfignetwork() {
 	fi
 }
 if [ -z $WG_IFACE_NTWRK ]; then
+	printf "Script variables not set! Attempting to determine Wireguard network from corrupted config file!\n" 1>&2
 	WRITEWGSCONF=true
-	WGCCONF=$(clientconfignetwork $WG_LAN)
-	if [[ *"/"* == "$WGCCONF" ]]; then
-		printf "Attempting to generate Wireguard network from corrupted config file!\n" 1>&2
-		WG_IFACE_NTWRK="$WGSCONF"
-		rangeunused "$WG_IFACE_NTWRK" || WG_IFACE_NTWRK=''
+	WG_IFACE_NTWRK=$(clientconfignetwork "$WG_LAN")
+	WGCCONF=$WG_IFACE_NTWRK
+	if [ -n "$WG_IFACE_NTWRK" ]; then
+		while ! rangeunused "$WG_IFACE_NTWRK"; do
+			WG_IFACE_NTWRK=$(getnextnetwork $WG_IFACE_NTWRK)
+			[ "$WGCCONF" = "$WG_IFACE_NTWRK" ] && WG_IFACE_NTWRK='' && break
+		done
 	fi
 	if [ -z $WG_IFACE_NTWRK ]; then
-		printf "Generating new network for Wiregaurd interface!" 1>&2
-		WG_IFACE_NTWRK="$(generatenetwork)"
-	fi
-	if [ -z $WG_IFACE_NTWRK ]; then
-		printf "Failed to generate new network for Wiregaurd interface! Correct script begining variables to overide prior settings and rerun!" 1>&2
-		exit 1
+		printf "Generating network for Wiregaurd interface!" 1>&2
+		WG_IFACE_NTWRK=$(generatenetworkfrom "$WG_LAN")
 	fi
 fi
 
 #VERIFY WIREGAURD PEER RANGE BEGINING
-if [ -z $WG_ADDRESS_RANGE_BEG ]; then
-	WRITEWGSCONF=true
-	[ -z $WGCCONF ] && WGCCONF=$(clientconfignetwork)
-	if [[ *"/"* == "$WGCCONF" ]]; then
-		printf "Attempting to determine netwok address range start from corrupted config file!\n" 1>&2
-		WG_ADDRESS_RANGE_BEG=${WGCCONF#*,} && WG_ADDRESS_RANGE_BEG=${WG_ADDRESS_RANGE_BEG%,*}
-		[ -z $WG_ADDRESS_RANGE_END ] && WG_ADDRESS_RANGE_END="${WGCCONF##*,}"
-	fi
-fi
-if [ ! "$(networkmin $WG_IFACE_NTWRK)" = "$(networkmin $WG_ADDRESS_RANGE_BEG)" ]; then
-	printf "Address range start not in contigous network with Wiregaurd interface! Correct script begining variables to overide prior settings and rerun!" 1>&2
+if [ -n "$WG_ADDRESS_RANGE_BEG" ] && [ ! "$(networkmin $WG_IFACE_NTWRK)" = "$(networkmin $WG_ADDRESS_RANGE_BEG)" ]; then
+	printf "Peer address range begin not in contigous network with Wiregaurd interface! Correct script variables!" 1>&2
 	exit 1
 fi
 
 #VERIFY WIREGAURD PEER RANGE ENDING
-if [ -z $WG_ADDRESS_RANGE_END ]; then
-	WRITEWGSCONF=true
-	[ -z $WGCCONF ] && WGCCONF=$(clientconfignetwork)
-	if [[ *"/"* == "$WGCCONF" ]]; then
-		printf "Attempting to determine netwok address range end from corrupted config file!\n" 1>&2
-		WG_ADDRESS_RANGE_END="${WGCCONF##*,}"
-	fi
-fi
-if [ ! "$(networkmin $WG_IFACE_NTWRK)" = "$(networkmin $WG_ADDRESS_RANGE_END)" ]; then
-	printf "Address range end not in contigous network with Wiregaurd interface! Correct script begining variables to overide prior settings and rerun!" 1>&2
+if [ -n "$WG_ADDRESS_RANGE_END" ] && [ ! "$(networkmin $WG_IFACE_NTWRK)" = "$(networkmin $WG_ADDRESS_RANGE_END)" ]; then
+	printf "Peer address range end not in contigous network with Wiregaurd interface! Correct script variables!" 1>&2
 	exit 1
 fi
 
 #VERIFY ENDPOINT KEYS
 if [ -z $WGS_PRIKEY ]; then
-	printf "No Wireguard server private key! Generating new key!" 1>&2
+	printf "No Wireguard interface private key! Generating new key!" 1>&2
+	WRITEWGSCONF=true
 	WGS_PRIKEY=$(wg genkey)
-	WGS_PUBKEY=''
 fi
-[ -z $WGS_PUBKEY ] && WGS_PUBKEY=$(wg pubkey<<<"$WGS_PRIKEY")
+WGS_PUBKEY=$(wg pubkey<<<"$WGS_PRIKEY")
 
 #VERIFY ENDPOINT PORT
 if [ -z $WG_ENDPOINT_PORT ]; then
 		WG_ENDPOINT_PORT="51820"
-		while 
+		while wg show|grep 'listening port:'|grep -q "$WG_ENDPOINT_PORT"; do
+			WG_ENDPOINT_PORT=$((WG_ENDPOINT_PORT + 1))
+		done
 fi
 
-
-if [ -z $WG_ENDPOINT ]
-	then
+if [ -z $WG_ENDPOINT ]; then
 		WG_ENDPOINT="$(dig +short myip.opendns.com @resolver1.opendns.com)"
 		printf "Script WG_ENDPOINT variable not set!\n\
 ENPOINT_HOSTNAME_OR_WANIP set to ${WG_ENDPOINT} on port ${WG_ENDPOINT_PORT}!\n\
