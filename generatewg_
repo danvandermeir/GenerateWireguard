@@ -1,31 +1,32 @@
 #!/bin/bash
-#what VPN peers/"clients" connect to
-#if blank attempts to determine WAN IP and changes all client config files if WAN IP has changed
+#what VPN peers connect to, save yourself trouble and utilize a DNS name
+#if blank attempts to determine WAN IP, if this is changes all client configuration files must be modified!
 WG_ENDPOINT=''
-
-#if blank uses default port of 51820
+#if blank uses default port of 51820, ascends if used
 WG_ENDPOINT_PORT=''
 
 #name of the local Wireguard interface this script controls
-#if blank lowest numbered default name selected (wg0 - wg100)
+#if blank ascends (wg0 - wg100), skips used
 WG_IFACE_NAME=''
-
-#CIDR format only: X.X.X.X/X
-#if blank checks for default LAN and uses next ascending available third octet with lowest available fourth octet
+#IP and network of the local Wireguard interface, CIDR format only: X.X.X.X/X
+#if blank checks WG_LAN for network, ascends networks if used
 WG_IFACE_NTWRK=''
-#peer ip range, ascending order
+#peer ip range, CIDR format only: X.X.X.X/X
+#if blank ascends from interface IP, wraps, ends at WG_ADDRESS_RANGE_END or interface IP
 WG_ADDRESS_RANGE_BEG=''
 WG_ADDRESS_RANGE_END=''
 
-#attempt to connect VPN network via NAT to default LAN if false
-WG_IFACE_NTWRK_ISOLATE=false
-#pass "all" peer traffic through VPN and NAT to default LAN if true, above must be false
+#attach VPN to this "LAN" interface name
+#if blank uses default network
+WG_LAN=''
+#connect VPN to "LAN" if true instead of false
+WG_IFACE_NTWRK_UNISOLATE=false
+#pass "all" peer traffic through VPN and system default route as needed when true (usually a NAT) instead of false
 WG_IFACE_NTWRK_GATEWAY=false
 
-#
+#if using VPN to pass "all" peer traffic a "safe" DNS server should absolutely be considered
 WG_DNS_SEND=false
-#gives peers the system default DNS server to use if blank, above must be true
-#if using a VPN to pass all traffic a "safe" DNS server should absolutely be considered
+#if blank gives peers system default DNS server, above must be true
 WG_DNS=''
 
 #######################################################################################
@@ -112,7 +113,7 @@ if [ -f ${WGSCONFFULLPATH} ]; then
 				\[Peer]*)
 					break;;
 				PublicKey = *)
-					[ -z $WGC_PUBKEY ] &&  WGC_PUBKEY=${x#PublicKey = };;
+					[ -z $WGC_PUBKEY ] WGC_PUBKEY=${x#PublicKey = };;
 				PresharedKey = *)
 					[ -z $WGC_PREKEY ] && WGC_PREKEY=${x#PresharedKey = };;
 				AllowedIPs = *)
@@ -145,9 +146,20 @@ else
 	WRITEWGSCONF=true
 fi
 
+[ "$IFACE" =  "$(defaultinterface)" ]; then
+	echo 1>/proc/sys/net/ipv4/ip_forward
+	iptables -A INPUT -i LAN-LAN -s 10.9.0.0/24 -j ACCEPT
+	iptables -A INPUT -i VPN2 -s 10.10.0.0/24 -j ACCEPT
+	iptables -A OUTPUT -o LAN-LAN -s 10.10.0.0/24 -d 10.9.0.0/24 -j ACCEPT
+	iptables -A OUTPUT -o VPN2 -s 10.9.0.0/24 -d 10.10.0.0/24 -j ACCEPT
+	iptables -A FORWARD -i LAN-LAN -o VPN2 -j ACCEPT
+	iptables -A FORWARD -i VPN2 -o LAN-LAN -j ACCEPT
+fi
+
 #VERIFY WIREGAURD INTERFACE IP, OR CREATE NEW WIREGUARD NETWORK FROM DEFAULT "LAN" INTERFACE AS TEMPLATE
+
 cidrtomask() {
-	if [ -z $1 ] || [[ $1 =~ ^[0-9]+2 ]]; then
+	if [ -z $1 ] || [[ ! $1 =~ ^[0-9]+$ ]] || [ $1 -lt 0 ] || [ $1 -gt 32 ]; then
 		printf "CIDR bit length not provided to cidrtomask function!\n" 1>&2
 		exit 1
 	fi
@@ -167,177 +179,229 @@ cidrtomask() {
 	printf "$mask"
 }
 networkmin() {
-	if [ -z $1 ] || [[ *"/"* != "$1" ]]; then
+	if [ -z $1 ] || [[ ! $1 =~ ^[0-9/.]+$ ]] || [[ $1 != *"/"* ]]; then
 		printf "CIDR network not provided to networkmin function!\n" 1>&2
 		exit 1
 	fi
-	local i1 i2 i3 i4 m1 m2 m3 m4
-	IFS=. read -r i1 i2 i3 i4<<<"${1%/*}"
+	local a1 a2 a3 a4 m1 m2 m3 m4
+	IFS=. read -r a1 a2 a3 a4<<<"${1%/*}"
 	IFS=. read -r m1 m2 m3 m4<<<"$(cidrtomask ${1#*/})"
-	i1=$((i1 & m1))
-	i2=$((i2 & m2))
-	i3=$((i3 & m3))
-	i4=$((i4 & m4))
+	a1=$((a1 & m1))
+	a2=$((a2 & m2))
+	a3=$((a3 & m3))
+	a4=$((a4 & m4))
 	printf "$a1.$a2.$a3.$a4"
 }
 networkmax() {
-	if [ -z $1 ] || [[ !  "$1" == *"/"* ]]; then
+	if [ -z $1 ] || [[ ! $1 =~ ^[0-9/.]+$ ]] || [[ $1 != *"/"* ]]; then
 		printf "CIDR network not provided to networkmax function!\n" 1>&2
 		exit 1
 	fi
-	local i1 i2 i3 i4 m1 m2 m3 m4
-	IFS=. read -r i1 i2 i3 i4<<<"${1%/*}"
+	local a1 a2 a3 a4 m1 m2 m3 m4
+	IFS=. read -r a1 a2 a3 a4<<<"${1%/*}"
 	IFS=. read -r m1 m2 m3 m4<<<"$(cidrtomask ${1#*/})"
-	i1=$(( ( 255 ^ m1 ) | i1 ))
-	i2=$(( ( 255 ^ m2 ) | i2 ))
-	i3=$(( ( 255 ^ m3 ) | i3 ))
-	i4=$(( ( 255 ^ m4 ) | i4 ))
-	printf "$i1.$i2.$i3.$i4"
+	a1=$(( ( 255 ^ m1 ) | a1 ))
+	a2=$(( ( 255 ^ m2 ) | a2 ))
+	a3=$(( ( 255 ^ m3 ) | a3 ))
+	a4=$(( ( 255 ^ m4 ) | a4 ))
+	printf "$a1.$a2.$a3.$a4"
+}
+getnextnetwork() {
+	if [ -z $1 ] || [[ ! $1 =~ ^[0-9/.]+$ ]] || [[ $1 != *"/"* ]]; then
+		printf "CIDR network not provided to getnextnetwork function!\n" 1>&2
+		exit 1
+	fi
+	local a1 a2 a3 a4 a5 a6 h1 h2 h3 h4 m1 m2 m3 m4 address
+	IFS=. read -r a1 a2 a3 a4<<<"${1%/*}"
+	h1=$a1
+	h2=$a2
+	h3=$a3
+	h4=$a4
+	a5=${1#*/}
+	a6=$(( 32 - a5 ))
+	IFS=. read -r m1 m2 m3 m4<<<"$(cidrtomask $a5)"
+	address=$((((((((((a1 << 8) | a2) << 8) | a3) << 8) | a4) >> a6) + 1) << a6 ))
+	a4=$(( ((255 & address) & m4) | (h4 & (255 ^ m4)) ))
+	address=$((address >> 8))
+	a3=$(( ((255 & address) & m3) | (h3 & (255 ^ m3)) ))
+	address=$((address >> 8))
+	a2=$(( ((255 & address) & m2) | (h2 & (255 ^ m2)) ))
+	address=$((address >> 8))
+	a1=$(( ((255 & address) & m1) | (h1 & (255 ^ m1)) ))
+	[ $h1 -eq 10 ] && [ $a1 -ne 10 ] && a1=10
+	[ "$h1$h2" = "192168" ] && [ "$a1$a2" != "192168" ] && a1=192 && a2=168
+	[ "$h1$h2" = "169254" ] && [ "$a1$a2" != "169254" ] && a1=169 && a2=254
+	[ $a1 -eq 172 ] && [ $a2 -gt 31 ] && a2=16
+	printf "$a1.$a2.$a3.$a4/$a5"
+}
+getnexthost() {
+	if [ -z $1 ] || [[ ! $1 =~ ^[0-9/.]+$ ]] || [[ $1 != *"/"* ]]; then
+		printf "CIDR network not provided to getnexthost function!\n" 1>&2
+		exit 1
+	fi
+	local a1 a2 a3 a4 a5 h1 h2 h3 h4 m1 m2 m3 m4 address
+	IFS=. read -r a1 a2 a3 a4<<<"${1%/*}"
+	h1=$a1
+	h2=$a2
+	h3=$a3
+	h4=$a4
+	a5=${1#*/}
+	IFS=. read -r m1 m2 m3 m4<<<"$(cidrtomask $a5)"
+	address=$((((((((a1 << 8) | a2) << 8) | a3) << 8) | a4) + 1))
+	a4=$((255 & address))
+	a4=$(((a4 & m4) | (a4 & (255 ^ m4))))
+	address=$((address >> 8))
+	a3=$((255 & address))
+	a3=$(((a3 & m3) | (a3 & (255 ^ m3))))
+	address=$((address >> 8))
+	a2=$((255 & address))
+	a2=$(((a2 & m2) | (a2 & (255 ^ m2))))
+	address=$((address >> 8))
+	a1=$((255 & address))
+	a1=$(((a1 & m1) | (a1 & (255 ^ m1))))
+	printf "$a1.$a2.$a3.$a4/$a5"
+}
+rangeunused() {
+	if [ -z $1 ] || ! [[ $1 =~ ^[0-9/.]+$ ]] || [[ $1 != *"/"* ]]; then
+		printf "CIDR network not provided to rangeunused function!\n" 1>&2
+		exit 1
+	fi
+	local a1 a2 a3 a4 a5 cur max address
+	a5=${1#*/}
+	IFS=. read -r a1 a2 a3 a4<<<"$(networkmax $1)"
+	max=$(( ( a1 << 24 ) + ( a2 << 16 ) + ( a3 << 8 ) + a4 ))
+	address=$(networkmin $1)
+	IFS=. read -r a1 a2 a3 a4<<<"$address"
+	while [[ "$(ip route get $a1.$a2.$a3.$a4/$a5)" == *"via"* ]] || return 1; do
+		cur=$(( ( a1 << 24 ) + ( a2 << 16 ) + ( a3 << 8 ) + a4 ))
+		[ $cur -eq $max ] && break
+		a4=$(( a4 + 1 ))
+		[ $a4 -eq 256 ] && a4=0 && a3=$(( a3 + 1 ))
+		[ $a3 -eq 256 ] && a3=0 && a2=$(( a2 + 1 ))
+		[ $a2 -eq 256 ] && a2=0 && a1=$(( a1 + 1 ))
+		[ $a1 -eq 256 ] && a1=0
+	done
+#	IFS=. read -r a1 a2 a3 a4<<<"$address"
+	#nmap or icmp check?
+	return
+}
+getnetworkof() {
+	if [ -z $1 ] || ! ip address show "$1"|grep -q 'inet '; then
+		printf 'getnetworkof function provided no or invalid network name!\n' 1>&2
+		return 1
+	fi
+	local address
+	address=$(ip address show "$1"|grep 'inet ')
+	address=${address#*inet }
+	printf "${address%% *}"
+}
+generatenetworkfrom() {
+	local address nextaddress
+	if [ -n "$1" ]; then
+		printf "Using $1 to generate a network!\n" 1>&2
+		address=$(getnetworkof "$1")
+	fi
+	if [ -z $address ]; then
+		address=$(ip route show default)
+		address=${address#* dev }
+		address=${address%% *}
+		printf "Using default ($address) to generate a network!\n" 1>&2
+		address=$(getnetworkof "$address")
+	fi
+	nextaddress=$(getnextnetwork "$address")
+	while ! rangeunused "$nextaddress"; do
+		nextaddress=$(getnextnetwork "$nextaddress")
+		if [ "$address" = "$nextaddress" ]; then
+			printf "generatenetworkfrom function could not determine an unused network!\n" 1>&2
+			exit 1
+		fi
+	done
+	printf "$nextaddress"
 }
 clientconfignetwork() {
 	#WARNING!!!! This function has the potential to "guess" prior existing networks based on peer configurations wrong!
-	local a1 a2 a3 a4 a5 check lowest highest laddress haddress address
+	local a1 a2 a3 a4 a5 a6 check lowest highest address generated
 	if [ -n "$WGSCONF" ]; then
-		while IFS="" read -r x || [ -n "$x" ]; do
-			[[ "$x" == "AllowedIPs = "* ]] && a1=${x//[!0-9\,\/\.]} && a1=${a1%%,*}
-			if [ -n "$a1" ]; then
-				a5=${a1#*/}
-				IFS=. read -r a1 a2 a3 a4<<<"${a1%/*}"
-				check=$(( a1 + a2 + a3 + a4 ))
+		while IFS= read -r x || [ -n "$x" ]; do
+			if [[ "$x" == "AllowedIPs = "* ]]; then
+				address=${x//[!0-9\,\/\.]}
+				address=${address%%,*}
+				address=${address%/*}
+				IFS=. read -r a1 a2 a3 a4<<<"$address"
+			check=$(((a1 << 24) + (a2 << 16) + (a3 << 8) + a4))
 				if [ -z $lowest ]; then
 					lowest=$check
 					highest=$check
-				else
-					if [ $check -lt $lowest ]; then
-						lowest=$check
-						laddress="$a1.$a2.$a3.a4/$a5"
-					fi
-					if [ $check -gt $highest ]; then
-						highest=$check
-						haddress="$a1.$a2.$a3.a4/$a5"
-					fi
+				elif [ $check -lt $lowest ]; then
+					lowest=$check
+				elif [ $check -gt $highest ]; then
+					highest=$check
 				fi
-				a1=''
 			fi
-		done < <(WGSCONF)
+		done <<< "$WGSCONF"
 		if [ -z $lowest ]; then
 			printf 'clientconfignetwork function could not determine any peer configurations!\n' 1>&2
 			return 1
-		elif [ $lowest = $highest ]; then
-			printf 'clientconfignetwork function could not determine network range from peer configurations!\n' 1>&2
-			return 1
-		else
-			lowest=$(networkmin "$laddress")
-			if [ "$lowest" = "$(networkmin $haddress)" ]; then
-				a5=${laddress#*/}
-				IFS=. read -r a1 a2 a3 a4 <<<"${lowest%/*}"
-				if [ "$a1.$a2.$a3.$(( a4 + 2 ))/$a5" = "$laddress" ]; then
-					address="$a1.$a2.$a3.$(( a4 + 1 ))/$a5"
-				else
-					highest=$(networkmax "$haddress")
-					IFS=. read -r a1 a2 a3 a4 <<<"${highest%/*}"
-					if [ "$a1.$a2.$a3.$(( a4 - 2 ))/$a5" = "$haddress" ]; then
-						address="$a1.$a2.$a3.$(( a4 - 1 ))/$a5"
-					else
-						printf 'clientconfignetwork function could not determine a contigous network! Interface and peer range are not adjacent!\n' 1>&2
-						return 1
-					fi
-				fi
-				IFS=. read -r a1 a2 a3 a4 <<<"${lowest%/*}"
-			else
-				printf 'clientconfignetwork function could not determine a contigous network! The discovered peers were not in the same network!\n' 1>&2
-				return 1
-			fi
 		fi
 	else
 		printf 'No Wiregaurd server configuration for clientconfignetwork function!\n' 1>&2
 		return 1
 	fi
-	printf "$address,$laddress,$haddress"
-}
-rangeunused() {
-	if [ -z $1 ] || [[ "$1" != *"/"* ]]; then
-		printf "CIDR network not provided to networkmax function!\n" 1>&2
-		exit 1
-	fi
-	local a1 a2 a3 a4 a5 cur max address
-	IFS=. read -r a1 a2 a3 a4<<<"${1%/*}"
-	a5=${1#*/}
-	IFS=. read -r i1 i2 i3 i4<<<"$(networkmax $a1.$a2.$a3.$a4/$a5)"
-	max=$(( ( i1 << 24 ) + ( i2 << 16 ) + ( i3 << 8 ) + i4 ))
-	i1=$a1
-	i2=$a2
-	i3=$a3
-	i4=$a4
-	while [[ "$(ip route get $i1.$i2.$i3.$i4/$a5)" == *"via"* ]]; do
-		cur=$(( ( i1 << 24 ) + ( i2 << 16 ) + ( i3 << 8 ) + i4 ))
-		[ $cur -eq $max ] && return
-		i4=$(( i4 + 1 ))
-		[ $i4 -eq 256 ] && i4=0 && i3=$(( i3 + 1 ))
-		[ $i3 -eq 256 ] && i3=0 && i2=$(( i2 + 1 ))
-		[ $i2 -eq 256 ] && i2=0 && i1=$(( i1 + 1 ))
-		[ $ii -eq 256 ] && i1=0
-	done
-	return 1
-}
-generatenetwork() {
-	local a1 a2 a3 a4 a5 m1 m2 m3 m4
-	address=true
-	a5=$(ip route show default)
-	a5=${a5#* dev }
-	a5=${a5%% *}
-	a5=$(ip address show "$a5"|grep 'inet ')
-	a5=${a5#*inet }
-	a5=${a5%% *}
-	IFS=. read -r a1 a2 a3 a4<<<"${a5%/*}"
-	a5=${a5#*/}
-	IFS=. read -r m1 m2 m3 m4<<<"$(cidrtomask $a5)"
-	a1=$(( a1 & m1 ))
-	a2=$(( a2 & m2 ))
-	a3=$(( a3 & m3 ))
-	a4=$(( a4 & m4 ))
-	while rangeunused "$a1.$a2.$a3.$a4/$a5"; do
-		if [ $m4 -eq 0 ]; then
-			if [ $m3 -eq 0 ]; then
-				if [ $m2 -eq 0 ]; then
-					if [ $m1 -eq 0 ]; then
-						printf 'Function generatenetwork is unable to generate a network! Bad subnet!\n'
-						exit 1
-					else
-						a1=$(( a1 + 1 ))
-						[ $a1 -eq 256 ] && a1=0
-					fi
-				else
-					a2=$(( a4 + 1 ))
-					[ $a2 -eq 256 ] && a2=0
-				fi
+	printf 'clientconfignetwork function attempting to match an existing network to Wireguard configuration file peers!\n' 1>&2
+	a6=$(generatenetworkfrom $1)
+	generated=$(getnexthost $a6)
+	IFS=. read -r a1 a2 a3 a4<<<"${generated%/*}"
+	check=$(((a1 << 24) + (a2 << 16) + (a3 << 8) + a4))
+	if [ $check -eq $lowest ] || [ $check -eq $((lowest - 1)) ]; then
+		printf 'clientconfignetwork function matched a network for Wireguard configuration file peers! Verify network in configuration file!\n' 1>&2
+		printf "$a6"
+	else
+		printf 'clientconfignetwork function attempting to guess network for Wireguard configuration file peers!\n' 1>&2
+		for x in {30..8}; do
+			IFS=. read -r a1 a2 a3 a4<<<"$(networkmin $address/$x)"
+			a5="$a1.$a2.$a3.$((a4 + 1))"
+			check=$((((a1 << 24) + (a2 << 16) + (a3 << 8) + a4) + 2))
+			if [ $check -eq $lowest ]; then
+				IFS=. read -r a1 a2 a3 a4<<<"$(networkmax $address/$x)"
+				check=$(((a1 << 24) + (a2 << 16) + (a3 << 8) + a4))
+				[ $check -gt $highest ] && address="$a5/$x" && a5=$x && break
 			else
-				a3=$(( a3 + 1 ))
-				[ $a3 -eq 256 ] && a3=0
+				IFS=. read -r a1 a2 a3 a4<<<"$(networkmax $address/$x)"
+				generated="$a1.$a2.$a3.$((a4 - 1))"
+				check=$((((a1 << 24) + (a2 << 16) + (a3 << 8) + a4) - 2))
+				if [ $check -eq $highest ]; then
+					IFS=. read -r a1 a2 a3 a4<<<"$a5"
+					check=$(((a1 << 24) + (a2 << 16) + (a3 << 8) + a4))
+					[ $check -le $lowest ] && address="$generated/$x" && a5=$x && break
+				fi
 			fi
+			a5=''
+		done
+		if [ -z $a5 ]; then
+			printf 'clientconfignetwork function could not determine a network from Wireguard confifuration file!\n' 1>&2
+			return 1
 		else
-			a4=$(( a4 + 1 ))
-			[ $a4 -eq 256 ] && a4=0
+			if [ ${a6#*/} -lt $((a5 + 5)) ] && [ ${a6#*/} -gt $((a5 - 5)) ]; then
+				printf 'clientconfignetwork function guessed a network close to existing network! Using existing network! Verify network in configuration file!\n' 1>&2
+				printf "$a6"
+			else
+				printf 'clientconfignetwork function guessed a network! Verify network in configuration file!\n' 1>&2
+				printf "$address"
+			fi
 		fi
-	done
-	printf "$a1.$a2.$a3.$(( a4 + 1 ))/$a5"
+	fi
 }
 if [ -z $WG_IFACE_NTWRK ]; then
 	WRITEWGSCONF=true
-	WGCCONF=$(clientconfignetwork)
+	WGCCONF=$(clientconfignetwork $WG_LAN)
 	if [[ *"/"* == "$WGCCONF" ]]; then
 		printf "Attempting to generate Wireguard network from corrupted config file!\n" 1>&2
-		WG_IFACE_NTWRK="${WGSCONF%%,*}"
-		[ -z $WG_ADDRESS_RANGE_BEG ] && WG_ADDRESS_RANGE_BEG="${WGCCONF#*,}" && WG_ADDRESS_RANGE_BEG="${WG_ADDRESS_RANGE_BEG%,*}"
-		[ -z $WG_ADDRESS_RANGE_END ] && WG_ADDRESS_RANGE_END="${WGCCONF##*,}"
+		WG_IFACE_NTWRK="$WGSCONF"
 		rangeunused "$WG_IFACE_NTWRK" || WG_IFACE_NTWRK=''
 	fi
 	if [ -z $WG_IFACE_NTWRK ]; then
 		printf "Generating new network for Wiregaurd interface!" 1>&2
-		WGCCONF=$(generatenetwork)
-		WG_IFACE_NTWRK="${WGSCONF%%,*}"
-		[ -z $WG_ADDRESS_RANGE_BEG ] && WG_ADDRESS_RANGE_BEG="${WGCCONF#*,}" && WG_ADDRESS_RANGE_BEG="${WG_ADDRESS_RANGE_BEG%,*}"
-		[ -z $WG_ADDRESS_RANGE_END ] && WG_ADDRESS_RANGE_END="${WGCCONF##*,}"
+		WG_IFACE_NTWRK="$(generatenetwork)"
 	fi
 	if [ -z $WG_IFACE_NTWRK ]; then
 		printf "Failed to generate new network for Wiregaurd interface! Correct script begining variables to overide prior settings and rerun!" 1>&2
@@ -374,18 +438,21 @@ if [ ! "$(networkmin $WG_IFACE_NTWRK)" = "$(networkmin $WG_ADDRESS_RANGE_END)" ]
 	exit 1
 fi
 
-#VERIFY SERVER KEYS
+#VERIFY ENDPOINT KEYS
 if [ -z $WGS_PRIKEY ]; then
 	printf "No Wireguard server private key! Generating new key!" 1>&2
 	WGS_PRIKEY=$(wg genkey)
-	WGS_PUBKEY=$(wg pubkey<<<"$WGS_PRIKEY")
+	WGS_PUBKEY=''
 fi
 [ -z $WGS_PUBKEY ] && WGS_PUBKEY=$(wg pubkey<<<"$WGS_PRIKEY")
 
-if [ -z $WG_ENDPOINT_PORT ]
-	then
+#VERIFY ENDPOINT PORT
+if [ -z $WG_ENDPOINT_PORT ]; then
 		WG_ENDPOINT_PORT="51820"
-	fi
+		while 
+fi
+
+
 if [ -z $WG_ENDPOINT ]
 	then
 		WG_ENDPOINT="$(dig +short myip.opendns.com @resolver1.opendns.com)"
