@@ -36,9 +36,202 @@ WRITEWGSCONF=false
 WGSCRIPTNAME="${0##*/}"
 WGSCRIPTPATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
-#HELP REQUEST/HOW TO USE
-if [ -z $1 ] || [[ $1 =~ '-h'|'-help'|'--help'|'help' ]]; then
-	printf "Edit variables in begining of script before running!\n\
+#!/bin/bash
+GETARGS() {
+	# $1=allowed flag list
+	# : prepended to flag list will not exit on error, errors must be handled elsewhere
+	# , postpended to flag means it can be passed multiple times, ommited only first iterance
+	# : postpended to flag means it has a required arguement
+	# $2=must be "$@" or an array of arguements
+	local CURARG ALLARGS SHUFARG SHUFARG2 SHUFARG3 SHUFARG4
+	ALLARGS=''
+	for CURARG in "${@:2}"; do
+		[[ "$CURARG" == "-"* ]] && ALLARGS="$ALLARGS${CURARG#-}"
+	done
+	[ -z "$ALLARGS" ] && return 1
+	CURARG="$ALLARGS"
+	#error for unknown flags
+	while [[ -n "$CURARG" ]]; do
+		SHUFARG="${CURARG::1}"
+		[[ "$1" != *"$SHUFARG"* ]] && return 1
+		CURARG="${CURARG:1}"
+	done
+	#allow multiple iterance of flag if postpended ,
+	while [ -n "$ALLARGS" ]; do
+		SHUFARG="${ALLARGS::1}"
+		CURARG="$CURARG$SHUFARG"
+		SHUFARG2="${1#*$SHUFARG}"
+		SHUFARG3="${SHUFARG2::1}"
+		SHUFARG4=''
+		while [ "$SHUFARG3" = ',' ] || [ "$SHUFARG3" = ':' ]; do
+			[ "$SHUFARG3" = ',' ] && ALLARGS="${ALLARGS:1}" && SHUFARG4=','
+			[ "$SHUFARG3" = ':' ] && CURARG="$CURARG$SHUFARG3"
+			SHUFARG2="${SHUFARG2:1}"
+			SHUFARG3="${SHUFARG2::1}"
+		done
+		[ -z "$SHUFARG4" ] && ALLARGS="${ALLARGS//$SHUFARG}"
+	done
+	while [[ "$CURARG" == *'::'* ]]; do
+		CURARG="${CURARG/:/::}"
+	done
+
+
+	printf "$CURARG"
+}
+GETARGFOR() {
+
+
+	CURARG="${@:2}"
+	[ -z "$CURARG" ] || [[ "$CURARG" != '-'* ]] && return 1
+
+	
+	for SHUFARG in "${@:2}"; do
+		if [[ "$SHUFARG" == "-"* ]]; then
+			if [ -z "$ALLARGS" ]; then
+				ALLARGS[0]="${CURARG#-}"
+				SHUFARG2="${#ALLARGS[0]}"
+			else
+				ALLARGS="$ALLARGS \\\"$SHUFARG\\\""
+			fi
+		fi
+	done
+	unset ALLARGS
+	local ALLARGS
+
+
+	while [ -n "$CURARGS"]; do
+		SHUFARG="${CURARG::1}"
+		CURARG="${CURARG:1}"
+		SHUFARG2="${CURARG::1}"
+
+		CURARG="${CURARG:1}"
+		SHUFARG="${CURARG::1}"
+		while [ "$SHUFARG" = ':' ]; do
+			CURARG="${CURARG:1}"
+			SHUFARG="${CURARG::1}"
+		done
+	done
+	local CURARG ALLARGS ARGIS SKIPS
+	ARGIS=''
+	ALLARGS="$(GETARGS null ${@#$1 })"
+	for CURARG in "$CURARG"; do
+		if [ -n "$SKIPS" ]; then
+			SKIPS=$((SKIPS - 1))
+			[ $SKIPS -eq 0 ] && ARGIS="$CURARG"
+		fi
+		if [[ "$CURARG" == "-"* ]]; then
+			[ -n "$SKIPS" ] && return 1
+			if [[ "$CURARG" == *"$1"* ]]; then
+				SKIPS=1
+				CURARG="${CURARG:2}"
+echo "GEN1 $SKIPS $CURARG"
+				while [[ "$CURARG" == *"$1"* ]]; do
+					ARGIS="${CURARG::1}"
+					[[ "$ALLARGS" == *"$ARGIS"* ]] && echo 'skipped' && SKIPS=$((SKIPS + 1))
+					CURARG="${CURARG:1}" && echo 'arged'
+echo "GEN2 $SKIPS $CURARG"
+				done
+				ARGIS=''
+echo "NEW $SKIPS $CURARG"
+			fi
+		fi
+		[ -n "$ARGIS" ] && break
+	done
+	[ "$ARGIS" = '' ] && return 1
+	printf "$ARGIS"
+}
+SHOWARGS() {
+	x="$(GETARGS  $@)"
+	[[ "$1" == *','* ]] &&
+	echo "$x"
+	while [ -n "$x" ]; do
+		y="$(GETARGFOR ${x::1} $@)"
+		x="${x:1}"
+		if [ -n "$y" ]; then
+			echo "GUD $y"
+		else
+			echo "WTF $y"
+		fi
+		echo
+		echo
+	done
+}
+echo $(GETARGS a::b,:c:, "$@")
+#pPeoiInsfca
+#:p:P:le:o:i:I:n:s:f:c:ugda:
+#for x in SHOWARGS :a:bc "$@"; do
+
+#done
+
+#s=${STRING//"$SUB_STRING"}
+#echo "$(((${#STRING} - ${#s}) / ${#SUB_STRING}))"
+
+#while getopts "abc:" x; do
+#	case $x in
+#		a) echo "$OPTARG" ;;
+#		b) echo "123" ;;
+#		c) echo "$OPTARG" ;;
+#		:|*|?) echo 'fuck' ;;
+#	esac
+#	shift
+#done
+
+DOUBLES="$@"
+while getopts :p:P:le:o:i:I:n:s:f:c:ugda: x ; do
+	case $x in
+		p|P)
+			[ -n "$P" ] && [[ "$@" != *'p'* ]] && WRITEWGSCONF=true && WRITEWGCCONF=true
+			WGC=$OPTARG
+		l)
+			WRITEWGSCONF=true
+			WGSUPDATE=true
+			echo 'make live';;
+		e)
+			WRITEWGSCONF=true
+			WG_ENDPOINT=$OPTARG
+			echo 'endpoint';;
+		o)
+			WRITEWGSCONF=true
+			WG_ENDPOINT_PORT=$OPTARG
+			echo 'endpoint port';;
+		i|I)
+			[ -n "$I" ] && [[ "$@" != *'i'* ]] && WRITEWGSCONF=true
+			WG_IFACE=$OPTARG
+			echo 'interface name';;
+		n)
+			WRITEWGSCONF=true
+			WG_IFACE_NTWRK=$OPTARG
+			echo 'interface network';;
+		s)
+			WRITEWGSCONF=true
+			WG_ADDRESS_RANGE_BEG=$OPTARG
+			echo 'peer range start';;
+		f)
+			WRITEWGSCONF=true
+			WG_ADDRESS_RANGE_END=$OPTARG
+			echo 'peer range finish';;
+		c)
+			WRITEWGSCONF=true
+			WG_LAN=$OPTARG
+			echo 'connected lan';;
+		u)
+			WRITEWGSCONF=true
+			WG_IFACE_NTWRK_UNISOLATE=true
+			echo 'unisolate lan';;
+		g)
+			WRITEWGSCONF=true
+			WG_IFACE_NTWRK_GATEWAY=true
+			echo 'lan is gateway';;
+		d)
+			WRITEWGSCONF=true
+			WG_DNS_SEND=true
+			echo 'force peer dns server';;
+		a)
+			WRITEWGSCONF=true
+			WG_DNS=$OPTARG
+			echo 'peer dns server';;
+		:|*|?)
+			printf "Edit variables in begining of script before running!\n\
 \n\
 Usage:\n\
 $WGSCRIPTPATH <REQUIRED> <OPTION> <LIVE>\n\
@@ -56,9 +249,10 @@ OPTION:\n\
 \n\
 LIVE:\n\
 \tlive\t- If provided will update the Wireguard interface with new or removed peer information.\n\
-\t\t  Configuration files are otherwise generated for next interface start.\n"
-	exit
-fi
+\t\t  Configuration files are otherwise generated for next interface start.\n" 2>&1
+			exit 1;;
+	esac
+done
 
 #VERIFY EXISTANCE OF REQUIRED BINARIES/APPLICATIONS
 if ! command -v wg &>/dev/null; then
@@ -391,7 +585,7 @@ clientconfignetwork() {
 	fi
 }
 if [ -z $WG_IFACE_NTWRK ]; then
-	printf "Script variables not set! Attempting to determine Wireguard network from corrupted config file!\n" 1>&2
+	printf "Script variable WG_IFACE_NTWRK not set! Attempting to determine Wireguard network from corrupted config file!\n" 1>&2
 	WRITEWGSCONF=true
 	WG_IFACE_NTWRK=$(clientconfignetwork "$WG_LAN")
 	WGCCONF=$WG_IFACE_NTWRK
@@ -402,18 +596,18 @@ if [ -z $WG_IFACE_NTWRK ]; then
 		done
 	fi
 	if [ -z $WG_IFACE_NTWRK ]; then
-		printf "Generating network for Wiregaurd interface!" 1>&2
+		printf "Generating network for Wireguard interface!" 1>&2
 		WG_IFACE_NTWRK=$(generatenetworkfrom "$WG_LAN")
 	fi
 fi
 
-#VERIFY WIREGAURD PEER RANGE BEGINING
+#VERIFY WIREGUARD PEER RANGE BEGINING
 if [ -n "$WG_ADDRESS_RANGE_BEG" ] && [ ! "$(networkmin $WG_IFACE_NTWRK)" = "$(networkmin $WG_ADDRESS_RANGE_BEG)" ]; then
 	printf "Peer address range begin not in contigous network with Wiregaurd interface! Correct script variables!" 1>&2
 	exit 1
 fi
 
-#VERIFY WIREGAURD PEER RANGE ENDING
+#VERIFY WIREGUARD PEER RANGE ENDING
 if [ -n "$WG_ADDRESS_RANGE_END" ] && [ ! "$(networkmin $WG_IFACE_NTWRK)" = "$(networkmin $WG_ADDRESS_RANGE_END)" ]; then
 	printf "Peer address range end not in contigous network with Wiregaurd interface! Correct script variables!" 1>&2
 	exit 1
@@ -421,116 +615,33 @@ fi
 
 #VERIFY ENDPOINT KEYS
 if [ -z $WGS_PRIKEY ]; then
-	printf "No Wireguard interface private key! Generating new key!" 1>&2
 	WRITEWGSCONF=true
+	printf "No Wireguard interface private key! Generating new key!" 1>&2
 	WGS_PRIKEY=$(wg genkey)
 fi
 WGS_PUBKEY=$(wg pubkey<<<"$WGS_PRIKEY")
 
 #VERIFY ENDPOINT PORT
 if [ -z $WG_ENDPOINT_PORT ]; then
-		WG_ENDPOINT_PORT="51820"
-		while wg show|grep 'listening port:'|grep -q "$WG_ENDPOINT_PORT"; do
-			WG_ENDPOINT_PORT=$((WG_ENDPOINT_PORT + 1))
-		done
+	WRITEWGSCONF=true
+	WG_ENDPOINT_PORT="51820"
+	while wg show|grep 'listening port:'|grep -q "$WG_ENDPOINT_PORT"; do
+		WG_ENDPOINT_PORT=$((WG_ENDPOINT_PORT + 1))
+	done
 fi
 
+#VERIFY WIREGUARD ENDPOINT FOR PEERS
 if [ -z $WG_ENDPOINT ]; then
-		WG_ENDPOINT="$(dig +short myip.opendns.com @resolver1.opendns.com)"
-		printf "Script WG_ENDPOINT variable not set!\n\
-ENPOINT_HOSTNAME_OR_WANIP set to ${WG_ENDPOINT} on port ${WG_ENDPOINT_PORT}!\n\
-All hostname or username config files belonging to Wireguard interface name ${WG_IFACE_NAME} reset!\n"
-		if [ -z $WGSCRIPTPATH_NEW ]
-			then
-				WGSCRIPTPATH_NEW="${WGSCRIPTPATH}"
-			fi
-		if [ -d ${WGSDIR} ]
-			then
-				for x in $(find ${WGSDIR} -maxdepth 1 -mindepth 1 -type d)
-					do
-						WGC=$(printf "${x}"|rev|cut -d'/' -f 1|rev)
-						WGCCONF=${x}'/'${WGC}'.conf'
-						if [ -f ${WGCCONF} ]
-							then
-								rm -f ${WGCCONF}
-							fi
-						if [ -f ${x}/privatekey ] && [ -f ${x}/publickey ] && [ -f ${x}/address ]
-							then
-								ADDRESS=$(<"${x}/address")
-								PUBLKEY=$(<"${x}/publickey")
-								PRIVKEY=$(<"${x}/privatekey")
-								printf "\t${WGC} - ${ADDRESS} - ${PUBLKEY}\n"
-								WGCFILE="[Interface]\n\
-PrivateKey = ${PRIVKEY}\n\
-PublicKey = ${PUBLKEY}\n\
-Address = ${ADDRESS}/$(echo $WG_IFACE_NTWRK|cut -d'/' -f2)\n\
-\n\
-[Peer]\n\
-PublicKey = ${SPUBLKEY}\n\
-AllowedIPs = $WG_IFACE_NTWRK\n\
-Endpoint = $WG_ENDPOINT:$WG_ENDPOINT_PORT"
-								printf "${WGCFILE}" > ${WGCCONF}
-							fi
-					done
-			fi
+	WRITEWGSCONF=true
+	printf "Script variable WG_ENDPOINT not set! Attempting to find public WAN IP!\n" 1>&2
+	WG_ENDPOINT="$(dig +short myip.opendns.com @resolver1.opendns.com)"
+	[ -z $WG_ENDPOINT ]; then
+		printf "Could not determine public WAN IP! Edit script variables and rerun!\n" 1>&2
+		exit 1
 	fi
-WGSCONFPATHCREATE () {
-	WGSFILE="[Interface]\n\
-PrivateKey = ${SPRIVKEY}\n\
-PublicKey = ${SPUBLKEY}\n\
-ListenPort = ${WG_ENDPOINT_PORT}"
-	if [ -d ${WGSDIR} ]
-		then
-			for x in $(find ${WGSDIR} -maxdepth 1 -mindepth 1 -type d)
-				do
-					if [ -f ${x}/publickey ] && [ -f ${x}/address ]
-						then
-							WGSFILE="$WGSFILE\n\
-\n\
-[Peer]\n\
-PublicKey = $(<${x}/publickey)\n\
-AllowedIPs = $(<${x}/address)/32"
-						fi
-				done
-		else
-			mkdir -p ${WGSDIR}
-		fi
-	if [ ! -z $WGSCRIPTPATH_NEW ]
-		then
-			if [ ! -f ${WGSCRIPTPATH_NEW} ]
-				then
-					printf "Script moved to: ${WGSCRIPTPATH_NEW}\n"
-					cp ${WGSCRIPTPATH} ${WGSCRIPTPATH_NEW}
-				fi
-			sed -i -e "0,/.*WG_ENDPOINT=.*/ s/.*WG_ENDPOINT=.*/WG_ENDPOINT='${WG_ENDPOINT}'/" ${WGSCRIPTPATH_NEW}
-			sed -i -e "0,/.*WG_IFACE_NAME=.*/ s/.*WG_IFACE_NAME=.*/WG_IFACE_NAME='${WG_IFACE_NAME}'/" ${WGSCRIPTPATH_NEW}
-		fi
-	printf "${WGSFILE}" > ${WGSCONFPATH}
-}
-WGSLIVE () {
-	if [ "${2}" = "live" ] || ([ "${1}" = "live" ] && [ -z $3 ])
-		then
-			if [ -d /sys/class/net/${WG_IFACE_NAME} ]
-				then
-					wg syncconf ${WG_IFACE_NAME} ${WGSCONFPATH}
-				else
-					if [ -z $WGSCRIPTPATH_NEW ]
-						then
-							printf "Interface ${WG_IFACE_NAME} not running!\n\
-Start interface with:\n\
-${WGSCRIPTPATH} ${WG_IFACE_NAME}\n"
-						else
-							printf "Interface ${WG_IFACE_NAME} not running!\n\
-Start interface with:\n\
-${WGSCRIPTPATH_NEW} ${WG_IFACE_NAME}\n"
-						fi
-				fi
-		fi
-}
-if [ ! -f ${WGSCONFPATH} ] || [ ! -z $WGSCRIPTPATH_NEW ]
-	then
-		WGSCONFPATHCREATE
-	fi
+	printf "Using $WG_ENDPOINT as endpoint for peers! Make sure your IP won't change, or be prepared to update all clients when it does!\n" 1>&2
+fi
+
 if [ "${WGC}" = "${WG_IFACE_NAME}" ]
 	then
 		if [ -d /sys/class/net/${WG_IFACE_NAME} ]
@@ -637,3 +748,60 @@ AllowedIPs = $ADDRESS/32" >> ${WGSCONFPATH}
 		printf "${WGCFILE}\n"
 	fi
 exit
+
+
+
+WGSCONFPATHCREATE() {
+
+	WGSFILE="[Interface]\n\
+PrivateKey = ${SPRIVKEY}\n\
+PublicKey = ${SPUBLKEY}\n\
+ListenPort = ${WG_ENDPOINT_PORT}"
+	if [ -d ${WGSDIR} ]
+		then
+			for x in $(find ${WGSDIR} -maxdepth 1 -mindepth 1 -type d)
+				do
+					if [ -f ${x}/publickey ] && [ -f ${x}/address ]
+						then
+							WGSFILE="$WGSFILE\n\
+\n\
+[Peer]\n\
+PublicKey = $(<${x}/publickey)\n\
+AllowedIPs = $(<${x}/address)/32"
+						fi
+				done
+		else
+			mkdir -p ${WGSDIR}
+		fi
+	if [ ! -z $WGSCRIPTPATH_NEW ]
+		then
+			if [ ! -f ${WGSCRIPTPATH_NEW} ]
+				then
+					printf "Script moved to: ${WGSCRIPTPATH_NEW}\n"
+					cp ${WGSCRIPTPATH} ${WGSCRIPTPATH_NEW}
+				fi
+			sed -i -e "0,/.*WG_ENDPOINT=.*/ s/.*WG_ENDPOINT=.*/WG_ENDPOINT='${WG_ENDPOINT}'/" ${WGSCRIPTPATH_NEW}
+			sed -i -e "0,/.*WG_IFACE_NAME=.*/ s/.*WG_IFACE_NAME=.*/WG_IFACE_NAME='${WG_IFACE_NAME}'/" ${WGSCRIPTPATH_NEW}
+		fi
+	printf "${WGSFILE}" > ${WGSCONFPATH}
+}
+WGSLIVE () {
+	if [ "${2}" = "live" ] || ([ "${1}" = "live" ] && [ -z $3 ])
+		then
+			if [ -d /sys/class/net/${WG_IFACE_NAME} ]
+				then
+					wg syncconf ${WG_IFACE_NAME} ${WGSCONFPATH}
+				else
+					if [ -z $WGSCRIPTPATH_NEW ]
+						then
+							printf "Interface ${WG_IFACE_NAME} not running!\n\
+Start interface with:\n\
+${WGSCRIPTPATH} ${WG_IFACE_NAME}\n"
+						else
+							printf "Interface ${WG_IFACE_NAME} not running!\n\
+Start interface with:\n\
+${WGSCRIPTPATH_NEW} ${WG_IFACE_NAME}\n"
+						fi
+				fi
+		fi
+}
