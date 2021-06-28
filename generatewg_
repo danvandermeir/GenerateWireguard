@@ -17,10 +17,12 @@ WG_ADDRESS_RANGE_BEG=''
 WG_ADDRESS_RANGE_END=''
 
 #attach VPN to this "LAN" interface name
-#if blank uses default network
+#if blank uses system default network
 WG_LAN=''
 #connect VPN to "LAN" if true instead of false
 WG_IFACE_NTWRK_UNISOLATE=false
+#comma seperated list of CIDR networks peers should route to endpoint (WireGuard and LAN networks automatically added as needed by user settings)
+WG_ROUTES=''
 #pass "all" peer traffic through VPN and system default route as needed when true (usually a NAT) instead of false
 WG_IFACE_NTWRK_GATEWAY=false
 
@@ -32,203 +34,436 @@ WG_DNS=''
 #######################################################################################
 ########## DO NOT EDIT BELOW SCRIPT UNLESS YOU KNOW WHAT YOU'RE DOING, KTHNX ##########
 #######################################################################################
+WGSUPDATE=false
 WRITEWGSCONF=false
+WGCSTATUS='#'
+CHECKALLWGC=false
+WRITEWGCCONF=false
+WRITEALLWGCCONF=false
 WGSCRIPTNAME="${0##*/}"
 WGSCRIPTPATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-
-#!/bin/bash
+isip() {
+	[ -z "$1" ] || [[ ! $1 =~ ^[0-9/.]+$ ]] && return 1
+	local a1 a2 a3 a4 v
+	a4="$1"
+	a1=${a4//.}
+	[ $((${#a4} - ${#a1})) -ne 3 ] && return 1
+	for y in {1..4}; do
+		declare a$y="${a4%.*}"
+		v="a$y"
+		[ -z "${!v}" ] || [ ${!v} -gt 255 ] && return 1
+		a4="${a4#*.}"
+	done
+	return 0
+}
+isprivateip() {
+	[ -z "$1" ] || ! isip "$1" && return 1
+	#check if IP is in private ranges
+	return 0
+}
+iscidr() {
+	[ -z "$1" ] || [[ ! $1 =~ ^[0-9/./\/]+$ ]] || ! isip "${1%/*}" && return 1
+	local m1
+	m1="${1#*/}"
+	[ -z "$m1" ] || [[ "$m1" = *'.'* ]] || [[ "$m1" = *'/'* ]] || [ $m1 -gt 24 ] && return 1
+	return 0
+}
 GETARGS() {
-	# $1=allowed flag list
-	# : prepended to flag list will not exit on error, errors must be handled elsewhere
-	# , postpended to flag means it can be passed multiple times, ommited only first iterance
-	# : postpended to flag means it has a required arguement
-	# $2=must be "$@" or an array of arguements
-	local CURARG ALLARGS SHUFARG SHUFARG2 SHUFARG3 SHUFARG4
-	ALLARGS=''
-	for CURARG in "${@:2}"; do
-		[[ "$CURARG" == "-"* ]] && ALLARGS="$ALLARGS${CURARG#-}"
-	done
-	[ -z "$ALLARGS" ] && return 1
-	CURARG="$ALLARGS"
-	#error for unknown flags
-	while [[ -n "$CURARG" ]]; do
-		SHUFARG="${CURARG::1}"
-		[[ "$1" != *"$SHUFARG"* ]] && return 1
-		CURARG="${CURARG:1}"
-	done
-	#allow multiple iterance of flag if postpended ,
-	while [ -n "$ALLARGS" ]; do
-		SHUFARG="${ALLARGS::1}"
-		CURARG="$CURARG$SHUFARG"
-		SHUFARG2="${1#*$SHUFARG}"
-		SHUFARG3="${SHUFARG2::1}"
-		SHUFARG4=''
-		while [ "$SHUFARG3" = ',' ] || [ "$SHUFARG3" = ':' ]; do
-			[ "$SHUFARG3" = ',' ] && ALLARGS="${ALLARGS:1}" && SHUFARG4=','
-			[ "$SHUFARG3" = ':' ] && CURARG="$CURARG$SHUFARG3"
-			SHUFARG2="${SHUFARG2:1}"
-			SHUFARG3="${SHUFARG2::1}"
-		done
-		[ -z "$SHUFARG4" ] && ALLARGS="${ALLARGS//$SHUFARG}"
-	done
-	while [[ "$CURARG" == *'::'* ]]; do
-		CURARG="${CURARG/:/::}"
-	done
-
-
-	printf "$CURARG"
-}
-GETARGFOR() {
-
-
-	CURARG="${@:2}"
-	[ -z "$CURARG" ] || [[ "$CURARG" != '-'* ]] && return 1
-
-	
-	for SHUFARG in "${@:2}"; do
-		if [[ "$SHUFARG" == "-"* ]]; then
-			if [ -z "$ALLARGS" ]; then
-				ALLARGS[0]="${CURARG#-}"
-				SHUFARG2="${#ALLARGS[0]}"
-			else
-				ALLARGS="$ALLARGS \\\"$SHUFARG\\\""
-			fi
-		fi
-	done
-	unset ALLARGS
-	local ALLARGS
-
-
-	while [ -n "$CURARGS"]; do
-		SHUFARG="${CURARG::1}"
-		CURARG="${CURARG:1}"
-		SHUFARG2="${CURARG::1}"
-
-		CURARG="${CURARG:1}"
-		SHUFARG="${CURARG::1}"
-		while [ "$SHUFARG" = ':' ]; do
-			CURARG="${CURARG:1}"
-			SHUFARG="${CURARG::1}"
-		done
-	done
-	local CURARG ALLARGS ARGIS SKIPS
-	ARGIS=''
-	ALLARGS="$(GETARGS null ${@#$1 })"
-	for CURARG in "$CURARG"; do
-		if [ -n "$SKIPS" ]; then
-			SKIPS=$((SKIPS - 1))
-			[ $SKIPS -eq 0 ] && ARGIS="$CURARG"
-		fi
-		if [[ "$CURARG" == "-"* ]]; then
-			[ -n "$SKIPS" ] && return 1
-			if [[ "$CURARG" == *"$1"* ]]; then
-				SKIPS=1
-				CURARG="${CURARG:2}"
-echo "GEN1 $SKIPS $CURARG"
-				while [[ "$CURARG" == *"$1"* ]]; do
-					ARGIS="${CURARG::1}"
-					[[ "$ALLARGS" == *"$ARGIS"* ]] && echo 'skipped' && SKIPS=$((SKIPS + 1))
-					CURARG="${CURARG:1}" && echo 'arged'
-echo "GEN2 $SKIPS $CURARG"
-				done
-				ARGIS=''
-echo "NEW $SKIPS $CURARG"
-			fi
-		fi
-		[ -n "$ARGIS" ] && break
-	done
-	[ "$ARGIS" = '' ] && return 1
-	printf "$ARGIS"
-}
-SHOWARGS() {
-	x="$(GETARGS  $@)"
-	[[ "$1" == *','* ]] &&
-	echo "$x"
-	while [ -n "$x" ]; do
-		y="$(GETARGFOR ${x::1} $@)"
-		x="${x:1}"
-		if [ -n "$y" ]; then
-			echo "GUD $y"
+	#present function call with getopts like interface
+	local FLGVARNAME ARGVARNAME CURARG
+	FLGVARNAME="FLG$$"
+	ARGVARNAME="ARG$$"
+	if [ -n "${!FLGVARNAME}" ]; then
+		eval "${!FLGVARNAME}"
+		eval "${!ARGVARNAME}"
+	fi
+	if declare -p FLG&>/dev/null; then
+		if [ "${#FLG[@]}" -eq 0 ]; then
+			unset $FLGVARNAME $ARGVARNAME $2 OPTARG
+			return 1
 		else
-			echo "WTF $y"
+			for CURARG in "${!FLG[@]}"; do
+				if [ $CURARG -eq 0 ]; then
+					eval export "$2"="${FLG[0]}"
+				else
+					FLG[$((CURARG - 1))]="${FLG[$CURARG]}"
+				fi
+				unset FLG[$CURARG]
+			done
+			if [ ${#ARG[@]} -eq 0 ]; then
+				unset OPTARG
+			else
+				[ -z "${ARG[0]}" ] && unset OPTARG
+				for CURARG in "${!ARG[@]}"; do
+					if [ $CURARG -eq 0 ]; then
+						[ -n "${ARG[0]}" ] && export OPTARG="${ARG[0]}"
+					else
+						ARG[$((CURARG - 1))]="${ARG[$CURARG]}"
+					fi
+					unset ARG[$CURARG]
+				done
+			fi
+			CURARG='$(declare -p FLG)'
+			eval $FLGVARNAME="$CURARG"
+			CURARG='$(declare -p ARG)'
+			eval $ARGVARNAME="$CURARG"
+			return 0
 		fi
-		echo
-		echo
+	fi
+	local ALLFLGS SHRTFLGS TMPSHRTFLGS TMPLNGFLGS CURFLG TMP1 TMP2 REQARGS NOREQARGS ERRHNDL
+	#input sanitize, build lists of accepted flags, then build array based on presented arguements and accepted flags
+	ALLFLGS="$1"
+	while [[ "$ALLFLGS" == *'::'* ]]; do
+		ALLFLGS="${ALLFLGS/::/:}"
 	done
+	while [[ "$ALLFLGS" == *',,'* ]]; do
+		ALLFLGS="${ALLFLGS/,,/,}"
+	done
+	while [[ "$ALLFLGS" == *'---'* ]]; do
+		ALLFLGS="${ALLFLGS/---/--}"
+	done
+	TMPLNGFLGS="--${ALLFLGS#*--}"
+	SHRTFLGS="${ALLFLGS%%--*}"
+	SHRTFLGS="${SHRTFLGS//-/}"
+	TMPSHRTFLGS="$SHRTFLGS"
+	if [ "${SHRTFLGS::1}" = ':' ]; then
+		SHRTFLGS="${SHRTFLGS:1}"
+		ERRHNDL=true
+	else
+		ERRHNDL=false
+	fi
+	CURFLG=0
+	REQARGS=''
+	NOREQARGS=''
+	for CURARG in "${@:3}"; do
+		if [ "$CURARG" = '-' ] || [ "$CURARG" = '--' ]; then
+			if $ERRHNDL; then
+				local FLG[$CURFLG] ARG[$CURFLG]
+				FLG[$CURFLG]='?'
+				ARG[$CURFLG]="$CURARG"
+				CURFLG=$((CURFLG + 1))
+				continue 1
+			else
+				printf -- "$CURARG is invalid!\n" >&2
+				return 1
+			fi
+		fi
+		if [[ "$CURARG" == '-'* ]]; then
+				if [ -n "$REQARGS" ]; then
+					if $ERRHNDL; then
+						while [ -n "$REQARGS" ]; do
+							TMP1="${REQARGS%%,*}"
+							local ARG[$TMP1]
+							ARG[$TMP1]="${FLG[$TMP1]}"
+							FLG[$TMP1]='?'
+							REQARGS="${REQARGS#$TMP1,}"
+						done
+					else
+						TMP1="${REQARGS%%,*}"
+						printf -- "${FLG[$TMP1]} no supplied arguement!\n" >&2
+						return 1
+					fi
+				fi
+			if [[ "$CURARG" == '--'* ]]; then
+				if [[ "$ALLFLGS" != *"$CURARG"* ]]; then
+					if $ERRHNDL; then
+						local FLG[$CURFLG] ARG[$CURFLG]
+						FLG[$CURFLG]="?"
+						ARG[$CURFLG]="$CURARG"
+						CURFLG=$((CURFLG + 1))
+						continue 1
+					else
+						printf -- "$CURARG is invalid flag!\n" >&2
+						return 1
+					fi
+				fi
+				if [[ "$TMPLNGFLGS" = *"$CURARG"* ]]; then
+					TMP2="$TMPLNGFLGS"
+					while [ -n "$TMP2" ]; do
+						if [[ "$TMP2" = "$CURARG"* ]]; then
+							local FLG[$CURFLG]
+							FLG[$CURFLG]="$CURARG"
+							TMP2="${TMP2#$CURARG}"
+							if [ "${TMP2::1}" = ':' ]; then
+								[ "${TMP2:1:1}" != ',' ] && TMPLNGFLGS="${TMPLNGFLGS/$CURARG:}"
+								REQARGS="$REQARGS$CURFLG,"
+							elif [ "${TMP2::1}" = ',' ]; then
+								if [ "${TMP2:1:1}" = ':' ]; then
+									REQARGS="$REQARGS$CURFLG,"
+								else
+									NOREQARGS="$NOREQARGS$CURFLG,"
+								fi
+							else
+								TMPLNGFLGS="${TMPLNGFLGS/$CURARG:}"
+								NOREQARGS="$NOREQARGS$CURFLG,"
+							fi
+							CURFLG=$((CURFLG + 1))
+							break 1
+						else
+							TMP2="${TMP2:2}"
+							TMP2="--${TMP2#*--}"
+						fi
+					done
+				elif $ERRHNDL; then
+					local FLG[$CURFLG] ARG[$CURFLG]
+					FLG[$CURFLG]="?"
+					ARG[$CURFLG]="$CURARG"
+					CURFLG=$((CURFLG + 1))
+					continue 1
+				else
+					printf -- "$CURARG cannot be used again!\n" >&2
+					return 1
+				fi
+			else
+				CURARG="${CURARG:1}"
+				while [ -n "$CURARG" ]; do
+					TMP1="${CURARG::1}"
+					CURARG="${CURARG:1}"
+					if [[ "$SHRTFLGS" != *"$TMP1"* ]]; then
+						if $ERRHNDL; then
+							local FLG[$CURFLG] ARG[$CURFLG]
+							FLG[$CURFLG]="?"
+							ARG[$CURFLG]="-$TMP1"
+							CURFLG=$((CURFLG + 1))
+							continue 1
+						else
+							printf -- "-$TMP1 is invalid flag!\n" >&2
+							return 1
+						fi
+					fi
+					if [[ "$TMPSHRTFLGS" = *"$TMP1"* ]]; then
+						TMP2="$TMPSHRTFLGS"
+						while [ -n "$TMP2" ]; do
+							if [[ "$TMP2" = "$TMP1"* ]]; then
+								local FLG[$CURFLG]
+								FLG[$CURFLG]="$TMP1"
+								TMP2="${TMP2:1}"
+								TMP1="${TMP2::1}"
+								if [ "$TMP1" = ':' ]; then
+									[ "${TMP2:1:1}" != ',' ] && TMPSHRTFLGS="${TMPSHRTFLGS/${FLG[$CURFLG]}:}"
+									REQARGS="$REQARGS$CURFLG,"
+								elif [ "$TMP1" = ',' ]; then
+									if [ "${TMP2:1:1}" = ':' ]; then
+										REQARGS="$REQARGS$CURFLG,"
+									else
+										NOREQARGS="$NOREQARGS$CURFLG,"
+									fi
+								else
+									TMPSHRTFLGS="${TMPSHRTFLGS/${FLG[$CURFLG]}}"
+									NOREQARGS="$NOREQARGS$CURFLG,"
+								fi
+								FLG[$CURFLG]="-${FLG[$CURFLG]}"
+								CURFLG=$((CURFLG + 1))
+								break 1
+							else
+								TMP2="${TMP2:1}"
+							fi
+						done
+					elif $ERRHNDL; then
+						local FLG[$CURFLG] ARG[$CURFLG]
+						FLG[$CURFLG]="?"
+						ARG[$CURFLG]="-$TMP1"
+						NOREQARGS="$NOREQARGS$CURFLG,"
+						CURFLG=$((CURFLG + 1))
+						continue 1
+					else
+						printf -- "-$TMP1 cannot be used again!\n" >&2
+						return 1
+					fi
+				done
+			fi
+		elif [ -n "$REQARGS" ]; then
+			TMP1="${REQARGS%%,*}"
+			local ARG[$TMP1]
+			ARG[$TMP1]="$CURARG"
+			REQARGS="${REQARGS#$TMP1,}"
+			NOREQARGS="$NOREQARGS$TMP1,"
+		elif [ -z "${FLG[0]}" ]; then
+			if $ERRHNDL; then
+				local FLG[$CURFLG] ARG[$CURFLG]
+				FLG[$CURFLG]="?"
+				ARG[$CURFLG]="$CURARG"
+				CURFLG=$((CURFLG + 1))
+			else
+				printf -- "$CURARG is not a flag!\n" >&2
+				return 1
+			fi
+		elif [ -z "$REQARGS" ]; then
+			if $ERRHNDL; then
+				local FLG[$CURFLG] ARG[$CURFLG]
+				FLG[$CURFLG]='?'
+				if [[ "$NOREQARGS" = *"$((CURFLG - 1))"* ]]; then
+					ARG[$CURFLG]="$CURARG"
+					NOREQARGS="$NOREQARGS$CURFLG,"
+				elif [ "${FLG[$((CURFLG - 1))]}" = '?' ]; then
+					ARG[$CURFLG]="${ARG[$((CURFLG - 1))]}"
+				else
+					ARG[$CURFLG]="${FLG[$((CURFLG - 1))]}"
+				fi
+				CURFLG=$((CURFLG + 1))
+			else
+				printf -- "${FLG[$((CURFLG - 1))]} over supplied arrguements!\n" >&2
+				return 1
+			fi
+		fi
+	done
+	if [ -n "$REQARGS" ]; then
+		if $ERRHNDL; then
+			while [ -n "$REQARGS" ]; do
+				TMP1="${REQARGS%%,*}"
+				local ARG[$TMP1]
+				ARG[$TMP1]="${FLG[$TMP1]}"
+				FLG[$TMP1]='?'
+				REQARGS="${REQARGS#$TMP1,}"
+			done
+		else
+			TMP1="${REQARGS%%,*}"
+			printf -- "${FLG[$TMP1]} no supplied arguement!\n" >&2
+			return 1
+		fi
+	fi
+	#first output to function call location
+	if [ -n "${FLG[0]}" ]; then
+		for REQARGS in "${!FLG[@]}"; do
+			if [ $REQARGS -eq 0 ]; then
+				eval export "$2"="${FLG[0]}"
+			else
+				FLG[$((REQARGS - 1))]="${FLG[$REQARGS]}"
+			fi
+			unset FLG[$REQARGS]
+		done
+		if [ ${#ARG[@]} -ne 0 ]; then
+			[ -z "${ARG[0]}" ] && unset OPTARG
+			for REQARGS in "${!ARG[@]}"; do
+				if [ $REQARGS -eq 0 ]; then
+					[ -n "${ARG[0]}" ] && export OPTARG="${ARG[0]}"
+				else
+					ARG[$((REQARGS - 1))]="${ARG[$REQARGS]}"
+				fi
+				unset ARG[$REQARGS]
+			done
+		fi
+		REQARGS='$(declare -p FLG)'
+		eval export $FLGVARNAME="$REQARGS"
+		REQARGS='$(declare -p ARG)'
+		eval export $ARGVARNAME="$REQARGS"
+		return 0
+	else
+		return 1
+	fi
 }
-echo $(GETARGS a::b,:c:, "$@")
-#pPeoiInsfca
-#:p:P:le:o:i:I:n:s:f:c:ugda:
-#for x in SHOWARGS :a:bc "$@"; do
-
-#done
-
-#s=${STRING//"$SUB_STRING"}
-#echo "$(((${#STRING} - ${#s}) / ${#SUB_STRING}))"
-
-#while getopts "abc:" x; do
-#	case $x in
-#		a) echo "$OPTARG" ;;
-#		b) echo "123" ;;
-#		c) echo "$OPTARG" ;;
-#		:|*|?) echo 'fuck' ;;
-#	esac
-#	shift
-#done
-
-DOUBLES="$@"
-while getopts :p:P:le:o:i:I:n:s:f:c:ugda: x ; do
+while GETARGS :L,i:l,p:,P:,D:,E:,--endpoint:--port:--iface-name:--wgs-network:--wgc-ip-beg:--wgc-ip-end:--wgs-to-lan:--wgs-unisolate--wg-network-add:--wg-network-rem:--wgs-gateway--wgs-dns-force--wgs-dns: x "$@"; do
+	OPTARG="${OPTARG// /}"
 	case $x in
-		p|P)
-			[ -n "$P" ] && [[ "$@" != *'p'* ]] && WRITEWGSCONF=true && WRITEWGCCONF=true
-			WGC=$OPTARG
-		l)
-			WRITEWGSCONF=true
+		-L)
 			WGSUPDATE=true
-			echo 'make live';;
-		e)
 			WRITEWGSCONF=true
-			WG_ENDPOINT=$OPTARG
+			echo 'make live, otherwise new config file is generated';;
+		-i)
+			WG_IFACE="$OPTARG"
+			echo 'use this wireguard interface name';;
+		-l)
+			SHOWALLWGC=true
+			echo 'show all peer "client" info';;
+		-p)
+			[ -z "$WGC" ] && WGC="$OPTARG"
+			echo 'show specified peer "client" info';;
+		-P)
+			WRITEWGCCONF=true
+			WRITEWGSCONF=true
+			WGC="$OPTARG"
+			echo 'generate peer "client" info';;
+		-D)
+			WRITEWGSCONF=true
+			WGC="$OPTARG"
+			echo 'disable client';;
+		-E)
+			WRITEWGSCONF=true
+			WGCSTATUS=''
+			WGC="$OPTARG"
+			echo 'enable client';;
+		--endpoint)
+			CHECKALLWGC=true
+			WRITEWGSCONF=true
+			WG_ENDPOINT="$OPTARG"
 			echo 'endpoint';;
-		o)
+		--port)
+			CHECKALLWGC=true
 			WRITEWGSCONF=true
-			WG_ENDPOINT_PORT=$OPTARG
+			WG_ENDPOINT_PORT="$OPTARG"
 			echo 'endpoint port';;
-		i|I)
-			[ -n "$I" ] && [[ "$@" != *'i'* ]] && WRITEWGSCONF=true
-			WG_IFACE=$OPTARG
-			echo 'interface name';;
-		n)
+		--iface-name)
 			WRITEWGSCONF=true
-			WG_IFACE_NTWRK=$OPTARG
-			echo 'interface network';;
-		s)
+			NEWWGSIFACE="$OPTARG"
+			echo 'change interface name';;
+		--wgs-network)
 			WRITEWGSCONF=true
-			WG_ADDRESS_RANGE_BEG=$OPTARG
+			WRITEALLWGCCONF=true
+			WG_IFACE_NTWRK="$OPTARG"
+			echo 'set wireguard interface network';;
+		--wgc-ip-beg)
+			CHECKALLWGC=true
+			WRITEWGSCONF=true
+			WG_ADDRESS_RANGE_BEG="$OPTARG"
 			echo 'peer range start';;
-		f)
+		--wgc-ip-end)
+			CHECKALLWGC=true
 			WRITEWGSCONF=true
-			WG_ADDRESS_RANGE_END=$OPTARG
+			WG_ADDRESS_RANGE_END="$OPTARG"
 			echo 'peer range finish';;
-		c)
+		--wgs-to-lan)
 			WRITEWGSCONF=true
-			WG_LAN=$OPTARG
+			WG_LAN="$OPTARG"
 			echo 'connected lan';;
-		u)
+		--wgs-unisolate)
+			CHECKALLWGC=true
 			WRITEWGSCONF=true
 			WG_IFACE_NTWRK_UNISOLATE=true
 			echo 'unisolate lan';;
-		g)
+		--wg-network-add)
+			CHECKALLWGC=true
 			WRITEWGSCONF=true
+			if iscidr "$OPTARG"; then
+				WG_ADD_ROUTES="$WG_ADD_ROUTES,$OPTARG"
+			else
+				printf -- "$OPTARG is not a valid CIDR address!\n" 1>&2
+				exit 1
+			fi
+			echo 'add network route from server and clients';;
+		--wg-network-rem)
+			CHECKALLWGC=true
+			WRITEWGSCONF=true
+			if iscidr "$OPTARG"; then
+				WG_REM_ROUTES="$WG_REM_ROUTES,$OPTARG"
+			else
+				printf -- "$OPTARG is not a valid CIDR address!\n" 1>&2
+				exit 1
+			fi
+			echo 'remove network route from server and clients';;
+		--wgs-gateway)
+			WRITEWGSCONF=true
+			WRITEALLWGCCONF=true
 			WG_IFACE_NTWRK_GATEWAY=true
 			echo 'lan is gateway';;
-		d)
-			WRITEWGSCONF=true
+		--dns-force-on)
 			WG_DNS_SEND=true
-			echo 'force peer dns server';;
-		a)
 			WRITEWGSCONF=true
-			WG_DNS=$OPTARG
+			WRITEALLWGCCONF=true
+			echo 'force peer dns server';;
+		--dns-force-off)
+			CHECKALLWGC=true
+			WRITEWGSCONF=true
+			WG_DNS_SEND=false
+			echo 'no peer dns server';;
+		--dns)
+			CHECKALLWGC=true
+			WRITEWGSCONF=true
+			if isip "$OPTARG"; then
+				WG_DNS="$OPTARG"
+			else
+				printf -- "$OPTARG is not a valid CIDR address!\n" 1>&2
+				exit 1
+			fi
 			echo 'peer dns server';;
 		:|*|?)
 			printf "Edit variables in begining of script before running!\n\
@@ -474,7 +709,7 @@ rangeunused() {
 		[ $a2 -eq 256 ] && a2=0 && a1=$(( a1 + 1 ))
 		[ $a1 -eq 256 ] && a1=0
 	done
-#	IFS=. read -r a1 a2 a3 a4<<<"$address"
+	#IFS=. read -r a1 a2 a3 a4<<<"$address"
 	#nmap or icmp check?
 	return
 }
