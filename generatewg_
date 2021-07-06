@@ -1,49 +1,89 @@
 #!/bin/bash
-#what VPN peers connect to, save yourself trouble and utilize a DNS name
-#if blank attempts to determine WAN IP, if this is changes all client configuration files must be modified!
-WG_ENDPOINT=''
+
+#hostname or IP that peers ("clients") connect to, save yourself trouble and utilize a DNS name
+#if blank attempts to determine WAN IP, if a WAN IP (or blank) and actual IP changes all peers ("clients") must be updated!
+ENDPOINT=''
+#port that peers ("clients") connect to, recommend changing from default (consult list of ports, Wiki?)
 #if blank uses default port of 51820, ascends if used
-WG_ENDPOINT_PORT=''
+PORT=''
+#disconnect peers ("clients") and endpoint from LAN when true instead of false
+#overriden by GATEWAY=true, if peer ("client") network conflict traffic is mostly routed to endpoint
+ISOLATE=false
+#peers ("clients") pass "all" traffic to endpoint's LAN route when true instead of false
+#when true absolutely consider setting USE_DNS to true and selecting a "safe" DNS server for DNS_SRV!
+GATEWAY=false
 
-#name of the local Wireguard interface this script controls
-#if blank ascends (wg0 - wg100), skips used
-WG_IFACE_NAME=''
+#######################################################
+########## ADVANCED AND/OR OPTIONAL FEATURES ##########
+#######################################################
+
+#WireGuard interface this script controls
+#if blank uses default of wg0 - wg255, ascends if used
+#if blank and script doesn't contain interface name a new interface and script file will be generated (generatewg_$IFACE)
+IFACE=''
 #IP and network of the local Wireguard interface, CIDR format only: X.X.X.X/X
-#if blank checks WG_LAN for network, ascends networks if used
-WG_IFACE_NTWRK=''
+#if blank checks LAN for network, ascends networks if used
+NTWRK=''
 #peer ip range, CIDR format only: X.X.X.X/X
-#if blank ascends from interface IP, wraps, ends at WG_ADDRESS_RANGE_END or interface IP
-WG_ADDRESS_RANGE_BEG=''
-WG_ADDRESS_RANGE_END=''
-
+#if blank ascends from NTWRK, wraps, and ends at NTWRK_END or NTWRK
+NTWRK_BEG=''
+NTWRK_END=''
 #attach VPN to this "LAN" interface name
-#if blank uses system default network
-WG_LAN=''
-#connect VPN to "LAN" if true instead of false
-WG_IFACE_NTWRK_UNISOLATE=false
-#comma seperated list of CIDR networks peers should route to endpoint (WireGuard and LAN networks automatically added as needed by user settings)
-WG_ROUTES=''
-#pass "all" peer traffic through VPN and system default route as needed when true (usually a NAT) instead of false
-WG_IFACE_NTWRK_GATEWAY=false
+#if blank uses system default network (network usually includes a NAT to the internet, routable only if GATEWAY=true)
+LAN=''
+#comma+space seperated list of CIDR LAN networks ('X.X.X.X/X, Y.Y.Y.Y/Y, Z.Z.Z.Z/Z') to attach VPN to
+#peers ("clients") will route to and from these networks over endpoint in addition to NTWRK and LAN
+ROUTES=''
+#peers ("clients") will use DNS_SRV for DNS server(s) when true instead of false
+USE_DNS=false
+#if blank uses enpoint system's DNS server (USE_DNS must be true)
+DNS_SRV=''
+#base64 symmetric-key crypto is mixed with public key crypto for post-quantum resistance when true instead of false
+#if false may lower CPU usage, perhaps a tiny boost in latency/speed as a result
+USEPREKEY=true
+#1-65535 seconds between empty encrypted packet sends by peers ("clients")
+#if blank or 0 this is disabled
+KEEPALIVE=300
 
-#if using VPN to pass "all" peer traffic a "safe" DNS server should absolutely be considered
-WG_DNS_SEND=false
-#if blank gives peers system default DNS server, above must be true
-WG_DNS=''
+NTWRK_MTU=''
 
-#######################################################################################
-########## DO NOT EDIT BELOW SCRIPT UNLESS YOU KNOW WHAT YOU'RE DOING, KTHNX ##########
-#######################################################################################
+PREUP=''
+
+POSTUP=''
+
+PREDOWN=''
+
+POSTDOWN=''
+
+########################################################################################
+########## DO NOT EDIT BELOW SCRIPT UNLESS YOU KNOW WHAT YOU ARE DOING, KTHNX ##########
+########################################################################################
+
+err() {
+	[ -n "$1" ] && printf -- "$1\n" 1>&2 && return 0
+	return 1
+}
+errout() {
+	err "$1"
+	exit 1
+}
+
+#VERIFY EXISTANCE OF REQUIRED BINARIES/APPLICATIONS
+BINARIES=('wg' 'ip')
+for x in "${!BINARIES[@]}"; do
+	BINARIES[$x]="$(command -v ${BINARIES[$x]})" || errout "Required binaries (applications) not available!"
+done
+
+#SET DEFAULTS FOR SCRIPT RUN
+WRITEWGS=false
 WGSUPDATE=false
-WRITEWGSCONF=false
 WGCSTATUS='#'
+WRITEWGC=false
+SHOWALLWGC=false
 CHECKALLWGC=false
-WRITEWGCCONF=false
-WRITEALLWGCCONF=false
-WGSCRIPTNAME="${0##*/}"
-WGSCRIPTPATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+WRITEALLWGC=false
 isip() {
-	[ -z "$1" ] || [[ ! $1 =~ ^[0-9/.]+$ ]] && return 1
+	[ -z "$1" ] || [[ ! $1 =~ ^[0-9/.]+$ ]] && err "$1 is not a valid IP address!" && return 1
 	local a1 a2 a3 a4 v
 	a4="$1"
 	a1=${a4//.}
@@ -51,8 +91,18 @@ isip() {
 	for y in {1..4}; do
 		declare a$y="${a4%.*}"
 		v="a$y"
-		[ -z "${!v}" ] || [ ${!v} -gt 255 ] && return 1
+		[ -z "${!v}" ] || [ ${!v} -gt 255 ] && err "$1 is not a valid IP address!" && return 1
 		a4="${a4#*.}"
+	done
+	return 0
+}
+ismultiip() {
+	local x y
+	x="$1"
+	while [ -n "$x" ]; do
+		y="${x%%, *}"
+		! isip "$y" && return 1
+		x="${x#$y, }"
 	done
 	return 0
 }
@@ -62,10 +112,20 @@ isprivateip() {
 	return 0
 }
 iscidr() {
-	[ -z "$1" ] || [[ ! $1 =~ ^[0-9/./\/]+$ ]] || ! isip "${1%/*}" && return 1
+	[ -z "$1" ] || [[ ! $1 =~ ^[0-9/./\/]+$ ]] || ! isip "${1%/*}" && err "$1 is not a valid CIDR address!" && return 1
 	local m1
 	m1="${1#*/}"
-	[ -z "$m1" ] || [[ "$m1" = *'.'* ]] || [[ "$m1" = *'/'* ]] || [ $m1 -gt 24 ] && return 1
+	[ -z "$m1" ] || [[ "$m1" = *'.'* ]] || [[ "$m1" = *'/'* ]] || [ $m1 -gt 32 ] && err "$1 is not a valid CIDR address!" && return 1
+	return 0
+}
+ismulticidr() {
+	local x y
+	x="$1"
+	while [ -n "$x" ]; do
+		y="${x%%, *}"
+		! iscidr "$y" && return 1
+		x="${x#$y, }"
+	done
 	return 0
 }
 GETARGS() {
@@ -352,228 +412,354 @@ GETARGS() {
 		return 1
 	fi
 }
-while GETARGS :L,i:l,p:,P:,D:,E:,--endpoint:--port:--iface-name:--wgs-network:--wgc-ip-beg:--wgc-ip-end:--wgs-to-lan:--wgs-unisolate--wg-network-add:--wg-network-rem:--wgs-gateway--wgs-dns-force--wgs-dns: x "$@"; do
+while GETARGS :L,i:l,p:Pg:GD:E:--endpoint:--port:--iface:--network:--ip-beg:--ip-end:--lan:--isolate--isolate--route-add:,--route-rem:,--gateway:--dns-on--dns-off--dns: x "$@"; do
 	OPTARG="${OPTARG// /}"
 	case $x in
 		-L)
 			WGSUPDATE=true
-			WRITEWGSCONF=true
-			echo 'make live, otherwise new config file is generated';;
+			echo 'make live, otherwise new config file is generated in place of old after move of old to .old';;
 		-i)
-			WG_IFACE="$OPTARG"
+			IFACE="$OPTARG"
 			echo 'use this wireguard interface name';;
-		-l)
+		-p)
+			WGC="$OPTARG"
+			echo 'show peer "client" info';;
+		-P)
 			SHOWALLWGC=true
 			echo 'show all peer "client" info';;
-		-p)
-			[ -z "$WGC" ] && WGC="$OPTARG"
-			echo 'show specified peer "client" info';;
-		-P)
-			WRITEWGCCONF=true
-			WRITEWGSCONF=true
+		-g)
+			WRITEWGC=true
+			WRITEWGS=true
 			WGC="$OPTARG"
 			echo 'generate peer "client" info';;
-		-D)
-			WRITEWGSCONF=true
+		-G)
+			WRITEALLWGC=true
+			WRITEWGS=true
+			echo 'generate all peers "client" info';;
+		-d)
+			WRITEWGS=true
 			WGC="$OPTARG"
 			echo 'disable client';;
-		-E)
-			WRITEWGSCONF=true
+		-D)
+			CHECKALLWGC=true
+			WRITEWGS=true
+			DISABLE=true
+			echo 'disable all clients';;
+		-e)
+			WRITEWGS=true
 			WGCSTATUS=''
 			WGC="$OPTARG"
 			echo 'enable client';;
-		--endpoint)
+		-E)
 			CHECKALLWGC=true
-			WRITEWGSCONF=true
-			WG_ENDPOINT="$OPTARG"
+			WRITEWGS=true
+			ENABLE=true
+			echo 'enable all clients';;
+		--endpoint)
+			WRITEALLWGC=true
+			WRITEWGS=true
+			ENDPOINT="$OPTARG"
 			echo 'endpoint';;
 		--port)
-			CHECKALLWGC=true
-			WRITEWGSCONF=true
-			WG_ENDPOINT_PORT="$OPTARG"
+			#check if valid port
+			WRITEALLWGC=true
+			WRITEWGS=true
+			PORT="$OPTARG"
 			echo 'endpoint port';;
-		--iface-name)
-			WRITEWGSCONF=true
-			NEWWGSIFACE="$OPTARG"
+		--iface)
+			#check if new interface name available
+			WRITEWGS=true
+			NEWIFACE="$OPTARG"
 			echo 'change interface name';;
-		--wgs-network)
-			WRITEWGSCONF=true
-			WRITEALLWGCCONF=true
-			WG_IFACE_NTWRK="$OPTARG"
+		--network)
+			#check if new network available
+			WRITEALLWGC=true
+			WRITEWGS=true
+			NTWRK="$OPTARG"
 			echo 'set wireguard interface network';;
-		--wgc-ip-beg)
+		--ip-beg)
 			CHECKALLWGC=true
-			WRITEWGSCONF=true
-			WG_ADDRESS_RANGE_BEG="$OPTARG"
-			echo 'peer range start';;
-		--wgc-ip-end)
-			CHECKALLWGC=true
-			WRITEWGSCONF=true
-			WG_ADDRESS_RANGE_END="$OPTARG"
-			echo 'peer range finish';;
-		--wgs-to-lan)
-			WRITEWGSCONF=true
-			WG_LAN="$OPTARG"
-			echo 'connected lan';;
-		--wgs-unisolate)
-			CHECKALLWGC=true
-			WRITEWGSCONF=true
-			WG_IFACE_NTWRK_UNISOLATE=true
-			echo 'unisolate lan';;
-		--wg-network-add)
-			CHECKALLWGC=true
-			WRITEWGSCONF=true
-			if iscidr "$OPTARG"; then
-				WG_ADD_ROUTES="$WG_ADD_ROUTES,$OPTARG"
+			WRITEWGS=true
+			if isip "$OPTARG"; then
+				#check if OPTARG in interface network
+				NTWRK_BEG="$OPTARG"
 			else
-				printf -- "$OPTARG is not a valid CIDR address!\n" 1>&2
-				exit 1
+				errout "$OPTARG is not a valid IP address!"
+			fi
+			echo 'peer range start';;
+		--ip-end)
+			CHECKALLWGC=true
+			WRITEWGS=true
+			if isip "$OPTARG"; then
+				#check if OPTARG in interface network
+				NTWRK_END="$OPTARG"
+			else
+				errout "$OPTARG is not a valid IP address!"
+			fi
+			echo 'peer range finish';;
+		--lan)
+			#check if interface exists
+			WRITEALLWGC=true
+			WRITEWGS=true
+			LAN="$OPTARG"
+			echo 'connected lan';;
+		--isolate)
+			WRITEALLWGC=true
+			WRITEWGS=true
+			ISOLATE=false
+			echo 'isolate lan';;
+		--unisolate)
+			WRITEALLWGC=true
+			WRITEWGS=true
+			ISOLATE=true
+			echo 'unisolate lan';;
+		--network-add)
+			WRITEALLWGC=true
+			WRITEWGS=true
+			if iscidr "$OPTARG"; then
+				[ -n "$ADD_ROUTES" ] && OPTARG=", $OPTARG"
+				ADD_ROUTES="$ADD_ROUTES$OPTARG"
+			else
+				errout "$OPTARG is not a valid CIDR address!"
 			fi
 			echo 'add network route from server and clients';;
-		--wg-network-rem)
-			CHECKALLWGC=true
-			WRITEWGSCONF=true
+		--network-rem)
+			WRITEALLWGC=true
+			WRITEWGS=true
 			if iscidr "$OPTARG"; then
-				WG_REM_ROUTES="$WG_REM_ROUTES,$OPTARG"
+				[ -n "$REM_ROUTES" ] && OPTARG=", $OPTARG"
+				REM_ROUTES="$REM_ROUTES$OPTARG"
 			else
-				printf -- "$OPTARG is not a valid CIDR address!\n" 1>&2
-				exit 1
+				errout "$OPTARG is not a valid CIDR address!"
 			fi
 			echo 'remove network route from server and clients';;
-		--wgs-gateway)
-			WRITEWGSCONF=true
-			WRITEALLWGCCONF=true
-			WG_IFACE_NTWRK_GATEWAY=true
-			echo 'lan is gateway';;
-		--dns-force-on)
-			WG_DNS_SEND=true
-			WRITEWGSCONF=true
-			WRITEALLWGCCONF=true
+		--gateway-on)
+			WRITEALLWGC=true
+			WRITEWGS=true
+			GATEWAY=true
+			echo 'force lan is gateway';;
+		--gateway-off)
+			WRITEALLWGC=true
+			WRITEWGS=true
+			GATEWAY=false
+			echo 'lan is not gateway';;
+		--dns-on)
+			WRITEALLWGC=true
+			WRITEWGS=true
+			USE_DNS=true
 			echo 'force peer dns server';;
-		--dns-force-off)
-			CHECKALLWGC=true
-			WRITEWGSCONF=true
-			WG_DNS_SEND=false
+		--dns-off)
+			WRITEALLWGC=true
+			WRITEWGS=true
+			USE_DNS=false
 			echo 'no peer dns server';;
 		--dns)
-			CHECKALLWGC=true
-			WRITEWGSCONF=true
-			if isip "$OPTARG"; then
-				WG_DNS="$OPTARG"
-			else
-				printf -- "$OPTARG is not a valid CIDR address!\n" 1>&2
-				exit 1
-			fi
+			WRITEALLWGC=true
+			WRITEWGS=true
+			DNS_SRV="$OPTARG"
 			echo 'peer dns server';;
 		:|*|?)
 			printf "Edit variables in begining of script before running!\n\
-\n\
-Usage:\n\
-$WGSCRIPTPATH <REQUIRED> <OPTION> <LIVE>\n\
-\n\
-REQUIRED:\n\
-\t\t- A hostname or username controlled by this script for this Wireguard interface name.\n\
-\t\t  Creates a peer if 'new' OPTION specified. Provides details (config file) for hostname or username.\n\
-\n\
-\t\t- If Wireguard interface name provided script will stand up or restart the interface using existing configuration.\n\
-\n\
-OPTION:\n\
-\tnew\t- Generate a new private and public key for specified hostname or username and display.\n\
-\n\
-\tremove\t- Remove peer with specified hostname or username.\n\
-\n\
-LIVE:\n\
-\tlive\t- If provided will update the Wireguard interface with new or removed peer information.\n\
-\t\t  Configuration files are otherwise generated for next interface start.\n" 2>&1
+			\n\
+			Usage:\n\
+			$WGSCRIPTPATH <REQUIRED> <OPTION> <LIVE>\n\
+			\n\
+			REQUIRED:\n\
+			\t\t- A hostname or username controlled by this script for this Wireguard interface name.\n\
+			\t\t  Creates a peer if 'new' OPTION specified. Provides details (config file) for hostname or username.\n\
+			\n\
+			\t\t- If Wireguard interface name provided script will stand up or restart the interface using existing configuration.\n\
+			\n\
+			OPTION:\n\
+			\tnew\t- Generate a new private and public key for specified hostname or username and display.\n\
+			\n\
+			\tremove\t- Remove peer with specified hostname or username.\n\
+			\n\
+			LIVE:\n\
+			\tlive\t- If provided will update the Wireguard interface with new or removed peer information.\n\
+			\t\t  Configuration files are otherwise generated for next interface start.\n" 2>&1
 			exit 1;;
 	esac
 done
 
-#VERIFY EXISTANCE OF REQUIRED BINARIES/APPLICATIONS
-if ! command -v wg &>/dev/null; then
-		printf "Wireguard not available! No path or wrong path? Installed?\n" 1>&2
-		exit 1
-fi
-
 #DETERMINE WIREGAURD INTERFACE NAME FROM SCRIPT NAME (wireguard_X), SCRIPT PATH, OR CREATES NEW DEFAULT WIREGAURD INTERFACE (wgX) WITH CONFIGURATION FILES
 #VERIFY SCRIPT NAME
+WGSCRIPTNAME="${0##*/}"
+WGSCRIPTPATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 WGSCRIPTWRITE() {
-	local WGSCRIPTPATH_NEW="/etc/wireguard/generatewg_$1"
+	local x WGSCRIPTPATH_NEW WGSCRIPT_NEW
+	WGSCRIPTPATH_NEW="/etc/wireguard/generatewg_$1"
 	if [ ! -f "$WGSCRIPTPATH_NEW" ]; then
-		cp "$WGSCRIPTPATH$WGSCRIPTNAME" "$WGSCRIPTPATH_NEW"
+		WGSCRIPT_NEW=($(<$WGSCRIPTPATH$WGSCRIPTNAME))
+		for x in "${!WGSCRIPT_NEW[@]}"; do
+			[[ "${}" = "IFACE=''"* ]] && WGSCRIPT_NEW[$x]="IFACE='$1'" && break 1
+		done
+		printf -- "${WGSCRIPT_NEW[@]}" > "$WGSCRIPTPATH_NEW"
 		chown root "$WGSCRIPTPATH_NEW"
 		chmod 700 "$WGSCRIPTPATH_NEW"
-		printf "Script copied to $WGSCRIPTPATH_NEW!\n"
+		err "Script copied for use with $1!"
 	fi
-	printf "Use $WGSCRIPTPATH_NEW instead! Script file can be moved.\n"
+	err "Use $WGSCRIPTPATH_NEW instead! Script file can be moved."
 }
-if [ -z $WG_IFACE_NAME ]; then
-	if [ ! "$WGSCRIPTNAME" = "generatewg_" ] && [[ "$WGSCRIPTNAME" == "wireguard_"* ]]; then
-		WG_IFACE_NAME="${WGSCRIPTNAME#*_}"
+if [ -z $IFACE ]; then
+	if [ ! "$WGSCRIPTNAME" = 'generatewg_' ] && [[ "$WGSCRIPTNAME" == 'generatewg_'* ]]; then
+		IFACE="${WGSCRIPTNAME#*_}"
 	else
-		for x in {0..100}; do
+		for x in {0..255}; do
 			if [ ! -d /sys/class/net/wg${x} ] && [ ! -f /etc/wireguard/wg${x}.conf ]; then
-				WG_IFACE_NAME="wg$x"
-				printf "Script WG_IFACE_NAME variable not set!\n\
-Script name has no hint!\n\
-WG_IFACE_NAME set to $WG_IFACE_NAME!\n"
-				WGSCRIPTWRITE "$WG_IFACE_NAME"
-				WRITEWGSCONF=true
-				break
+				WRITEWGS=true
+				IFACE="wg$x"
+				err "Script IFACE interface variable not set!\nScript name has no hint!\nIFACE set to $IFACE!"
+				WGSCRIPTWRITE "$IFACE"
+				break 1
 			fi
 		done
 	fi
-elif [ ! "$WGSCRIPTNAME" = "wireguard_$WG_IFACE_NAME" ]; then
-	printf "Script name is improper!\n" 1>&2
-	WGSCRIPTWRITE "$WG_IFACE_NAME"
+elif [ ! "$WGSCRIPTNAME" = "generatewg_$IFACE" ]; then
+	err "Script name is improper!"
+	WGSCRIPTWRITE "$IFACE"
+fi
+
+#PARSE CONFIG FILE
+WGSFULLPATH="/etc/wireguard/$IFACE.conf"
+if [ -f "$WGSFULLPATH" ]; then
+	WGCONFIG=($(<$WGSFULLPATH))
+	for x in "${!WGCONFIG[@]}"; do
+		if [ -z "$y" ]; then
+			case "${WGCONFIG[$x]}" in
+PrivateKey = *) PRIVKEY="${WGCONFIG[$x]#* = }";;
+ListenPort = *) CUR_PORT="${WGCONFIG[$x]#* = }";;
+\#PresharedKey) CUR_USEPREKEY=true;;
+\#LAN = *) CUR_LAN="${WGCONFIG[$x]#* = }";;
+\#GATEWAY) CUR_GATEWAY=true;;
+				\#ISOLATE) CUR_ISOLATE=true;;
+				\#routes = *) CUR_ROUTES="${WGCONFIG[$x]#* = }";;
+				\#NTWRK_BEG = *) CUR_NTWRK_BEG="${WGCONFIG[$x]#* = }";;
+				\#NTWRK_END = *) CUR_NTWRK_END="${WGCONFIG[$x]#* = }";;
+				\#Endpoint = *) CUR_ENDPOINT="${WGCONFIG[$x]#* = }";;
+				\#PersistentKeepalive = *) CUR_KEEPALIVE="${WGCONFIG[$x]#* = }";;
+Address = *) CUR_NTWRK="${WGCONFIG[$x]#* = }";;
+				\#DNS = *) CUR_DNS_SRV="${WGCONFIG[$x]}";;
+				\#use_dns) CUR_USE_DNS=true;;
+				\#MTU = *) CUR_NTWRK_MTU="${WGCONFIG[$x]#* = }";;
+				\#PreUp = *) CUR_PREUP="${WGCONFIG[$x]#* = }";;
+				\#PostUp = *) CUR_POSTUP="${WGCONFIG[$x]#* = }";;
+				\#PreDown = *) CUR_PREDOWN="${WGCONFIG[$x]#* = }";;
+				\#PostDown = *) CUR_POSTDOWN="${WGCONFIG[$x]#* = }";;
+\[Peer]*) break 1;;
+			esac
+			unset WGCONFIG[$x]
+		else
+			! SHOWALLWGC && ! CHECKALLWGC && ! WRITEALLWGC && [ 1 -eq $y ] && break 1
+			if [ -z "${PEERS[$y]}" ] ||; then
+			case "${WGCONFIG[$x]}" in
+				*\[Peer]*) [ -n "${PEERS[$y]}" ] && y=$((y + 1)) && [ '#' = "${WGCONFIG[$x]::1}" ] && PEERSSTATUSES[$y]='#' || PEERSSTATUSES[$y]='';;
+				\#peer = *) z="${WGCONFIG[$x]#\#peer = }" && SHOWALLWGC || CHECKALLWGC || WRITEALLWGC || [[ "$WGC" = *",$z,"* ]] && PEERS[$y]="$z";;
+				*PublicKey = *) [ -n "${PEERS[$y]}" ] && PEERSPUBKEYS[$y]="${WGCONFIG[$x]#* = }" && [ -z "${PEERSPUBKEYS[$y]}" ] && peererr "$y";;
+				\#prekey = *) [ -n "${PEERS[$y]}" ] && PEERSPREKEYS[$y]="${WGCONFIG[$x]#* = }";;
+				*PresharedKey = *) [ -n "${PEERS[$y]}" ] && PEERSPREKEYS[$y]="${WGCONFIG[$x]#* = }";;
+				*AllowedIPs = *) [ -n "${PEERS[$y]}" ] && PEERSIPS[$y]="${WGCONFIG[$x]#* = }";;
+				*PersistentKeepalive = *) [ -n "${PEERS[$y]}" ] && PEERSALIVES[$y]="${WGCONFIG[$x]#* = }";;
+				\#DNS = *) [ -n "${PEERS[$y]}" ] && PEERSDNSS[$y]="${WGCONFIG[$x]#* = }";;
+				\#MTU = *) [ -n "${PEERS[$y]}" ] && PEERSMTUS[$y]="${WGCONFIG[$x]#* = }";;
+			esac
+		fi
+	do
+else
+	WRITEWGS=true
+fi
+
+#INPUT SANTIZATION
+torf() {
+	[ $1 = true ] || [ $1 = false ] && return 0
+	return 1
+}
+x='^[0-9]+$'
+[ -n "$CUR_PORT" ]  && ! [[ $CUR_PORT =~ $x ]] || [ $CUR_PORT -lt 1 ] || [ $CUR_PORT -gt 65535 ] && errout "Invalid endpoint port from configuration file ($CUR_PORT)!"
+if [ -n "$PORT" ]; then
+		! [[ $PORT =~ $x ]] || [ $PORT -lt 1 ] || [ $PORT -gt 65535 ] && errout "Invalid endpoint port from script or user ($PORT)!"
+		if [ -n "$CUR_PORT" ] && [ $CUR_PORT -ne $PORT ]; then
+			err "Changing endpoint port from $CUR_PORT to $PORT!"
+			PORT=$CUR_PORT
+			unset CUR_PORT
+			WRITEWGS=true
+			CHECKALLWGC=true
+		fi
+elif [ -n "$CUR_PORT" ]; then
+	PORT=$CUR_PORT
+	unset CUR_PORT
+fi
+[ -n "$CUR_NTWRK" ] && ! iscidr "$CUR_NTWRK" && errout "Invalid endpoint interface network from configuration file ($CUR_NTWRK)!"
+if [ -n "$NTWRK" ]; then
+		! iscidr "$NTWRK" && errout "Invalid endpoint interface network from script or user ($NTWRK)!"
+		if [ -n "$CUR_NTWRK" ] && [ "$CUR_NTWRK" != "$NTWRK" ]; then
+			err "Changing endpoint interface network from $CUR_NTWRK to $NTWRK!"
+			NTWRK="$CUR_NTWRK"
+			unset CUR_NTWRK
+			WRITEWGS=true
+			CHECKALLWGC=true
+		fi
+elif [ -n "$CUR_NTWRK" ]; then
+	NTWRK="$CUR_NTWRK"
+	unset CUR_NTWRK
+fi
+[ -z "$CUR_USEPREKEY" ] && CUR_USEPREKEY=false
+if [ -n "$USEPREKEY" ]; then
+	! torf "$USEPREKEY" && errout "USEPREKEY variable not true or false from script!"
+	if [ $CUR_USEPREKEY != $USEPREKEY ]; then
+		err "All clients will have configuration files generated!\nAll clients must update to this new configuration once live!"
+		USEPREKEY=$CUR_USEPREKEY
+		unset CUR_USEPREKEY
+		WRITEWGS=true
+		WRITEALLWGC=true
+	fi
+else
+	USEPREKEY=$CUR_USEPREKEY
+	unset CUR_USEPREKEY
+fi
+[ -n "$CUR_LAN" ] && [ ! -d "/sys/class/net/$CUR_LAN" ] && errout "Invalid endpoint LAN interface from configuration file ($CUR_LAN)!"
+if [ -n "$LAN" ]; then
+		[ ! -d "/sys/class/net/$LAN" ] && errout "Invalid endpoint LAN interface from script or user ($LAN)!"
+		if [ -n "$CUR_LAN" ] && [ "$CUR_LAN" != "$LAN" ]; then
+			err "Changing endpoint interface network from $CUR_LAN to $LAN!"
+			NTWRK="$CUR_NTWRK"
+			unset CUR_NTWRK
+			WRITEWGS=true
+			CHECKALLWGC=true
+		fi
+elif [ -n "$CUR_LAN" ]; then
+	LAN="$CUR_LAN"
+	unset CUR_LAN
+fi
+[ -z "$CUR_GATEWAY" ] && CUR_GATEWAY=false
+if [ -n "$GATEWAY" ]; then
+	! torf "$GATEWAY" && errout "USEPREKEY variable not true or false from script!"
+	if [ $CUR_GATEWAY != $GATEWAY ]; then
+		err "All clients will have configuration files generated!\nAll clients must update to this new configuration once live!"
+		GATEWAY=$CUR_GATEWAY
+		unset CUR_GATEWAY
+		WRITEWGS=true
+		WRITEALLWGC=true
+	fi
+else
+	USEPREKEY=$CUR_GATEWAY
+	unset CUR_GATEWAY
+fi
+
+[ -n "$NTWRK_BEG" ] && ! isip "$NTWRK_BEG" && errout "Invalid peer range begin IP!"
+[ -n "$NTWRK_END" ] && ! isip "$NTWRK_END" && errout "Invalid peer range end IP!"
+[ -n "$ROUTES" ] && ! ismulticidr "$ROUTES" && errout "Invalid route list!"
+[ -n "$ADD_ROUTES" ] && ! ismulticidr "$ADD_ROUTES" && errout "Invalid route to add!"
+[ -n "$REM_ROUTES" ] && ! ismulticidr "$REM_ROUTES" && errout "Invalid route to remove!"
+[ -n "$MTU" ] && [ $MTU -eq 0 ] && unset MTU
+if [ -n "$DNS_SRV" ]; then
+	! isip "$DNS_SRV" && errout "Invalid DNS IP!"
+	! dig +time=2 +tries=2 +retry=0 +short @$DNS_SRV A dns.google.com &> /dev/null && errout "$DNS_SRV is not a valid DNS!"
 fi
 
 #LOAD WIREGAURD INTERFACE CONFIGURATION FILE TO MEMORY AND SET VARIABLES OR CREATE FILE
 #VERIFY CONFIGURATION FILE CONTINUITY AGAINST SCRIPT SETTINGS, IF DIFFERENT AND CHANGES ACCEPTED BY USER MODIFIES CONFIGURATION FILE TO MATCH SCRIPT
-WGSCONFFULLPATH="/etc/wireguard/$WG_IFACE_NAME.conf"
-WGC="${1// }"
-WGCCONFDIR="$WGSDIR$1/"
-if [ -f ${WGSCONFFULLPATH} ]; then
-	WGSCONF=$(<"$WGSCONFFULLPATH")
-	WGCCONF=false
-	while IFS="" read -r x || [ -n "$x" ]; do
-		if $WGCCONF; then
-			case $x in
-				\[Peer]*)
-					break;;
-				PublicKey = *)
-					[ -z $WGC_PUBKEY ] WGC_PUBKEY=${x#PublicKey = };;
-				PresharedKey = *)
-					[ -z $WGC_PREKEY ] && WGC_PREKEY=${x#PresharedKey = };;
-				AllowedIPs = *)
-					[ -z $WG_IFACE_NTWRK ] && WG_IFACE_NTWRK=${x//[!0-9\,\/\.]} && WG_IFACE_NTWRK=${WG_IFACE_NTWRK%%,*};;
-			esac
-		else
-			case $x in
-				\#Peer = ${WGC}*)
-					WGCCONF=true;;
-				ListenPort = *)
-					[ -z $WG_ENDPOINT_PORT ] && WG_ENDPOINT_PORT=${x//[!0-9]};;
-				PrivateKey = *)
-					[ -z $WGS_PRIKEY ] && WGS_PRIKEY=${x#PrivateKey = } && WGS_PRIKEY=${WGS_PRIKEY// } && WGS_PUBKEY=$(wg pubkey<<<"$WGS_PRIKEY");;
-				PresharedKey = *)
-					[ -z $WGS_PREKEY ] && WGS_PREKEY=${x#PresharedKey = } && WGS_PREKEY=${WGS_PREKEY// };;
-				Address = *)
-					[ -z $WG_IFACE_NTWRK ] && WG_IFACE_NTWRK=${x//[!0-9\,\/\.]} && WG_IFACE_NTWRK=${WG_IFACE_NTWRK%%,*};;
-				\#PeerEndpoint = *)
-					[ -z $WG_ENDPOINT ] && WG_ENDPOINT=${x#\#PeerEndpoint = } && WG_ENDPOINT=${WG_ENDPOINT// };;
-				\#PeerDNS = *)
-					[ -z $WG_DNS ] && WG_DNS=${x//[!0-9\/\.]} && WG_DNS=${WG_DNS%%/*};;
-				\#RangeBeg = *)
-					[ -z $WG_ADDRESS_RANGE_BEG ] && WG_ADDRESS_RANGE_BEG=${x//[!0-9\,\/\.]} && WG_ADDRESS_RANGE_BEG=${WG_ADDRESS_RANGE_BEG%%,*};;
-				\#RangeEnd = *)
-					[ -z $WG_ADDRESS_RANGE_END ] && WG_ADDRESS_RANGE_END=${x//[!0-9\,\/\.]} && WG_ADDRESS_RANGE_END=${WG_ADDRESS_RANGE_END%%,*};;
-			esac
-		fi
-	done < <(WGSCONF)
-else
-	WRITEWGSCONF=true
-fi
+WGCDIR="$WGSDIR$1/"
 
 [ "$IFACE" =  "$(defaultinterface)" ]; then
 	echo 1>/proc/sys/net/ipv4/ip_forward
@@ -749,7 +935,7 @@ generatenetworkfrom() {
 clientconfignetwork() {
 	#WARNING!!!! This function has the potential to "guess" prior existing networks based on peer configurations wrong!
 	local a1 a2 a3 a4 a5 a6 check lowest highest address generated
-	if [ -n "$WGSCONF" ]; then
+	if [ -n "$WGS" ]; then
 		while IFS= read -r x || [ -n "$x" ]; do
 			if [[ "$x" == "AllowedIPs = "* ]]; then
 				address=${x//[!0-9\,\/\.]}
@@ -766,7 +952,7 @@ clientconfignetwork() {
 					highest=$check
 				fi
 			fi
-		done <<< "$WGSCONF"
+		done <<< "$WGS"
 		if [ -z $lowest ]; then
 			printf 'clientconfignetwork function could not determine any peer configurations!\n' 1>&2
 			return 1
@@ -819,165 +1005,165 @@ clientconfignetwork() {
 		fi
 	fi
 }
-if [ -z $WG_IFACE_NTWRK ]; then
-	printf "Script variable WG_IFACE_NTWRK not set! Attempting to determine Wireguard network from corrupted config file!\n" 1>&2
-	WRITEWGSCONF=true
-	WG_IFACE_NTWRK=$(clientconfignetwork "$WG_LAN")
-	WGCCONF=$WG_IFACE_NTWRK
-	if [ -n "$WG_IFACE_NTWRK" ]; then
-		while ! rangeunused "$WG_IFACE_NTWRK"; do
-			WG_IFACE_NTWRK=$(getnextnetwork $WG_IFACE_NTWRK)
-			[ "$WGCCONF" = "$WG_IFACE_NTWRK" ] && WG_IFACE_NTWRK='' && break
+if [ -z $NTWRK ]; then
+	printf "Script variable NTWRK not set! Attempting to determine Wireguard network from corrupted config file!\n" 1>&2
+	WRITEWGS=true
+	NTWRK=$(clientconfignetwork "$LAN")
+	WGC=$NTWRK
+	if [ -n "$NTWRK" ]; then
+		while ! rangeunused "$NTWRK"; do
+			NTWRK=$(getnextnetwork $NTWRK)
+			[ "$WGC" = "$NTWRK" ] && NTWRK='' && break
 		done
 	fi
-	if [ -z $WG_IFACE_NTWRK ]; then
+	if [ -z $NTWRK ]; then
 		printf "Generating network for Wireguard interface!" 1>&2
-		WG_IFACE_NTWRK=$(generatenetworkfrom "$WG_LAN")
+		NTWRK=$(generatenetworkfrom "$LAN")
 	fi
 fi
 
 #VERIFY WIREGUARD PEER RANGE BEGINING
-if [ -n "$WG_ADDRESS_RANGE_BEG" ] && [ ! "$(networkmin $WG_IFACE_NTWRK)" = "$(networkmin $WG_ADDRESS_RANGE_BEG)" ]; then
+if [ -n "$NTWRK_BEG" ] && [ ! "$(networkmin $NTWRK)" = "$(networkmin $NTWRK_BEG)" ]; then
 	printf "Peer address range begin not in contigous network with Wiregaurd interface! Correct script variables!" 1>&2
 	exit 1
 fi
 
 #VERIFY WIREGUARD PEER RANGE ENDING
-if [ -n "$WG_ADDRESS_RANGE_END" ] && [ ! "$(networkmin $WG_IFACE_NTWRK)" = "$(networkmin $WG_ADDRESS_RANGE_END)" ]; then
+if [ -n "$NTWRK_END" ] && [ ! "$(networkmin $NTWRK)" = "$(networkmin $NTWRK_END)" ]; then
 	printf "Peer address range end not in contigous network with Wiregaurd interface! Correct script variables!" 1>&2
 	exit 1
 fi
 
 #VERIFY ENDPOINT KEYS
 if [ -z $WGS_PRIKEY ]; then
-	WRITEWGSCONF=true
+	WRITEWGS=true
 	printf "No Wireguard interface private key! Generating new key!" 1>&2
 	WGS_PRIKEY=$(wg genkey)
 fi
 WGS_PUBKEY=$(wg pubkey<<<"$WGS_PRIKEY")
 
 #VERIFY ENDPOINT PORT
-if [ -z $WG_ENDPOINT_PORT ]; then
-	WRITEWGSCONF=true
-	WG_ENDPOINT_PORT="51820"
-	while wg show|grep 'listening port:'|grep -q "$WG_ENDPOINT_PORT"; do
-		WG_ENDPOINT_PORT=$((WG_ENDPOINT_PORT + 1))
+if [ -z $PORT ]; then
+	WRITEWGS=true
+	PORT="51820"
+	while wg show|grep 'listening port:'|grep -q "$PORT"; do
+		PORT=$((PORT + 1))
 	done
 fi
 
 #VERIFY WIREGUARD ENDPOINT FOR PEERS
-if [ -z $WG_ENDPOINT ]; then
-	WRITEWGSCONF=true
-	printf "Script variable WG_ENDPOINT not set! Attempting to find public WAN IP!\n" 1>&2
-	WG_ENDPOINT="$(dig +short myip.opendns.com @resolver1.opendns.com)"
-	[ -z $WG_ENDPOINT ]; then
+if [ -z $ENDPOINT ]; then
+	WRITEWGS=true
+	printf "Script variable ENDPOINT not set! Attempting to find public WAN IP!\n" 1>&2
+	ENDPOINT="$(dig +short myip.opendns.com @resolver1.opendns.com)"
+	[ -z $ENDPOINT ]; then
 		printf "Could not determine public WAN IP! Edit script variables and rerun!\n" 1>&2
 		exit 1
 	fi
-	printf "Using $WG_ENDPOINT as endpoint for peers! Make sure your IP won't change, or be prepared to update all clients when it does!\n" 1>&2
+	printf "Using $ENDPOINT as endpoint for peers! Make sure your IP won't change, or be prepared to update all clients when it does!\n" 1>&2
 fi
 
-if [ "${WGC}" = "${WG_IFACE_NAME}" ]
+if [ "${WGC}" = "${IFACE}" ]
 	then
-		if [ -d /sys/class/net/${WG_IFACE_NAME} ]
+		if [ -d /sys/class/net/${IFACE} ]
 			then
-				ip link delete dev ${WG_IFACE_NAME}
+				ip link delete dev ${IFACE}
 			fi
-		ip link add dev ${WG_IFACE_NAME} type wireguard && wg setconf ${WG_IFACE_NAME} ${WGSCONFPATH} && exit
+		ip link add dev ${IFACE} type wireguard && wg setconf ${IFACE} ${WGSPATH} && exit
 		exit 1
 	fi
 if [ "${2}" = "remove" ]
 	then
-		if [ -d ${WGCCONFDIR} ]
+		if [ -d ${WGCDIR} ]
 			then
 				printf "${WGC} removed!\n"
-				rm -rf ${WGCCONFDIR}
+				rm -rf ${WGCDIR}
 			else
 				printf "No Hostname or Username called ${WGC} exists!\n"
 			fi
-		rm -f ${WGSCONFPATH}
-		WGSCONFPATHCREATE
+		rm -f ${WGSPATH}
+		WGSPATHCREATE
 		WGSLIVE ${2} ${3}
 	else
-		if [ ! -d ${WGCCONFDIR} ]
+		if [ ! -d ${WGCDIR} ]
 			then
-				mkdir -p ${WGCCONFDIR}
+				mkdir -p ${WGCDIR}
 			fi
-		if [ -f ${WGCCONFDIR}address ]
+		if [ -f ${WGCDIR}address ]
 			then
-				ADDRESS=$(<"${WGCCONFDIR}address")
+				ADDRESS=$(<"${WGCDIR}address")
 			else
-				ADDRESS=$(echo $WG_IFACE_NTWRK|cut -d'.' -f1)'.'$(echo $WG_IFACE_NTWRK|cut -d'.' -f2)'.'$(echo $WG_IFACE_NTWRK|cut -d'.' -f3)'.'
-				WGSFILE=$(<${WGSCONFPATH})
-				while echo "${WGSFILE}"|grep -q "${ADDRESS}${WG_ADDRESS_RANGE_BEG}"
+				ADDRESS=$(echo $NTWRK|cut -d'.' -f1)'.'$(echo $NTWRK|cut -d'.' -f2)'.'$(echo $NTWRK|cut -d'.' -f3)'.'
+				WGSFILE=$(<${WGSPATH})
+				while echo "${WGSFILE}"|grep -q "${ADDRESS}${NTWRK_BEG}"
 					do
-						if [ $WG_ADDRESS_RANGE_BEG -eq $WG_ADDRESS_RANGE_END ]
+						if [ $NTWRK_BEG -eq $NTWRK_END ]
 							then
 								printf "No available address!\n"
 								exit 1
 							else
-								((WG_ADDRESS_RANGE_BEG=WG_ADDRESS_RANGE_BEG+1))
+								((NTWRK_BEG=NTWRK_BEG+1))
 							fi
 				done
-				ADDRESS="${ADDRESS}${WG_ADDRESS_RANGE_BEG}"
-				printf "${ADDRESS}" > ${WGCCONFDIR}address
-				if [ -f ${WGCCONF} ]
+				ADDRESS="${ADDRESS}${NTWRK_BEG}"
+				printf "${ADDRESS}" > ${WGCDIR}address
+				if [ -f ${WGC} ]
 					then
-						rm -f ${WGCCONF}publickey
+						rm -f ${WGC}publickey
 					fi
 			fi
-		if [ ! -f ${WGCCONFDIR}privatekey ] || [ "${2}" = "new" ]
+		if [ ! -f ${WGCDIR}privatekey ] || [ "${2}" = "new" ]
 			then
 				PRIVKEY=$(wg genkey)
-		    		printf "${PRIVKEY}" > ${WGCCONFDIR}privatekey
-				if [ -f ${WGCCONFDIR}publickey ]
+		    		printf "${PRIVKEY}" > ${WGCDIR}privatekey
+				if [ -f ${WGCDIR}publickey ]
 					then
-						rm -f ${WGCCONFDIR}publickey
+						rm -f ${WGCDIR}publickey
 					fi
-				if [ -f ${WGCCONF} ]
+				if [ -f ${WGC} ]
 					then
-						rm -f ${WGCCONF}publickey
+						rm -f ${WGC}publickey
 					fi
 			else
-				PRIVKEY=$(<"${WGCCONFDIR}privatekey")
+				PRIVKEY=$(<"${WGCDIR}privatekey")
 			fi
-		if [ ! -f ${WGCCONFDIR}publickey ] || [ "${2}" = "new" ]
+		if [ ! -f ${WGCDIR}publickey ] || [ "${2}" = "new" ]
 			then
 				PUBLKEY=$(printf "${PRIVKEY}" | wg pubkey)
-				printf "${PUBLKEY}" > ${WGCCONFDIR}publickey
-				if [ -f ${WGCCONF} ]
+				printf "${PUBLKEY}" > ${WGCDIR}publickey
+				if [ -f ${WGC} ]
 					then
-						rm -f ${WGCCONF}publickey
+						rm -f ${WGC}publickey
 					fi
 			else
-				PUBLKEY=$(<"${WGCCONFDIR}publickey")
+				PUBLKEY=$(<"${WGCDIR}publickey")
 			fi
-		if [ ! -f ${WGCCONF} ] || [ "${2}" = "new" ]
+		if [ ! -f ${WGC} ] || [ "${2}" = "new" ]
 			then
 				WGCFILE="[Interface]\n\
 PrivateKey = $PRIVKEY\n\
 PublicKey = $PUBLKEY\n\
-Address = $ADDRESS/$(echo $WG_IFACE_NTWRK|cut -d'/' -f2)\n\
+Address = $ADDRESS/$(echo $NTWRK|cut -d'/' -f2)\n\
 \n\
 [Peer]\n\
 PublicKey = $SPUBLKEY\n\
-AllowedIPs = $WG_IFACE_NTWRK\n\
-Endpoint = $WG_ENDPOINT:$WG_ENDPOINT_PORT"
-				printf "${WGCFILE}" > ${WGCCONF}
+AllowedIPs = $NTWRK\n\
+Endpoint = $ENDPOINT:$PORT"
+				printf "${WGCFILE}" > ${WGC}
 			else
-				WGCFILE=$(<"${WGCCONF}")
+				WGCFILE=$(<"${WGC}")
 			fi
-		if grep -q "$ADDRESS" ${WGSCONFPATH} && [ "${2}" = "new" ]
+		if grep -q "$ADDRESS" ${WGSPATH} && [ "${2}" = "new" ]
 			then
-				rm -f ${WGSCONFPATH}
-				WGSCONFPATHCREATE
-		elif ! grep -q "$ADDRESS" ${WGSCONFPATH}
+				rm -f ${WGSPATH}
+				WGSPATHCREATE
+		elif ! grep -q "$ADDRESS" ${WGSPATH}
 			then
 				printf "\n\
 \n\
 [Peer]\n\
 PublicKey = $PUBLKEY\n\
-AllowedIPs = $ADDRESS/32" >> ${WGSCONFPATH}
+AllowedIPs = $ADDRESS/32" >> ${WGSPATH}
 			fi
 		WGSLIVE ${2} ${3}
 		printf "${WGCFILE}\n"
@@ -986,12 +1172,12 @@ exit
 
 
 
-WGSCONFPATHCREATE() {
+WGSPATHCREATE() {
 
 	WGSFILE="[Interface]\n\
 PrivateKey = ${SPRIVKEY}\n\
 PublicKey = ${SPUBLKEY}\n\
-ListenPort = ${WG_ENDPOINT_PORT}"
+ListenPort = ${PORT}"
 	if [ -d ${WGSDIR} ]
 		then
 			for x in $(find ${WGSDIR} -maxdepth 1 -mindepth 1 -type d)
@@ -1015,27 +1201,27 @@ AllowedIPs = $(<${x}/address)/32"
 					printf "Script moved to: ${WGSCRIPTPATH_NEW}\n"
 					cp ${WGSCRIPTPATH} ${WGSCRIPTPATH_NEW}
 				fi
-			sed -i -e "0,/.*WG_ENDPOINT=.*/ s/.*WG_ENDPOINT=.*/WG_ENDPOINT='${WG_ENDPOINT}'/" ${WGSCRIPTPATH_NEW}
-			sed -i -e "0,/.*WG_IFACE_NAME=.*/ s/.*WG_IFACE_NAME=.*/WG_IFACE_NAME='${WG_IFACE_NAME}'/" ${WGSCRIPTPATH_NEW}
+			sed -i -e "0,/.*ENDPOINT=.*/ s/.*ENDPOINT=.*/ENDPOINT='${ENDPOINT}'/" ${WGSCRIPTPATH_NEW}
+			sed -i -e "0,/.*IFACE=.*/ s/.*IFACE=.*/IFACE='${IFACE}'/" ${WGSCRIPTPATH_NEW}
 		fi
-	printf "${WGSFILE}" > ${WGSCONFPATH}
+	printf "${WGSFILE}" > ${WGSPATH}
 }
 WGSLIVE () {
 	if [ "${2}" = "live" ] || ([ "${1}" = "live" ] && [ -z $3 ])
 		then
-			if [ -d /sys/class/net/${WG_IFACE_NAME} ]
+			if [ -d /sys/class/net/${IFACE} ]
 				then
-					wg syncconf ${WG_IFACE_NAME} ${WGSCONFPATH}
+					wg syncconf ${IFACE} ${WGSPATH}
 				else
 					if [ -z $WGSCRIPTPATH_NEW ]
 						then
-							printf "Interface ${WG_IFACE_NAME} not running!\n\
+							printf "Interface ${IFACE} not running!\n\
 Start interface with:\n\
-${WGSCRIPTPATH} ${WG_IFACE_NAME}\n"
+${WGSCRIPTPATH} ${IFACE}\n"
 						else
-							printf "Interface ${WG_IFACE_NAME} not running!\n\
+							printf "Interface ${IFACE} not running!\n\
 Start interface with:\n\
-${WGSCRIPTPATH_NEW} ${WG_IFACE_NAME}\n"
+${WGSCRIPTPATH_NEW} ${IFACE}\n"
 						fi
 				fi
 		fi
