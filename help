@@ -47,7 +47,7 @@ Clients may need to have required configurations regenerated:
 	--ip-beg, --ip-end
 				client IP range begining and ending
 					if ommited at inception starts ascending from --network address and ends at --network address, loops
-	--lan			the endpoint system interface that client traffic will be routed to if configured by isolation and gateway settings
+	--lan			the endpoint system interface that client traffic will be routed to if enabled by isolation settings
 					if ommited at inception this will be the system defafult gateway interface
 	--unisolate, --isolate
 				do or do not route --lan network traffic to/from clients through endpoint
