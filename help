@@ -6,7 +6,7 @@ Quick start:
 
 Wireguard was built with peer to peer relationships.
 This tool is used to generate a server and client style relationship for Wireguard interfaces.
-Effectively, this is a client manager.
+Effectively, this is a server and client manager.
 When script is called server and client configuration files in wg-quick format will be generated.
 Endpoint will be configured for clients to connect as requested.
 Edit options in either the CLI as described below, or by editing script variables.
