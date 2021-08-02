@@ -1,8 +1,6 @@
-
-
 Quick start:
 1) Run (optional, but recommend non-standard port: " --port <PORT>"):
-	$WGSCRIPTPATH$WGSCRIPTNAME --endpoint <FQDN> --port <PORT> -LGpp <CLIENTNAME1> <CLIENTNAME2>
+	'"$WGSCRIPTPATH$WGSCRIPTNAME"' --endpoint <FQDN> --port <PORT> -LGpp <CLIENTNAME1> <CLIENTNAME2>
 2) Securely give client file to client for import or use with wg-quick.
 
 
@@ -18,55 +16,55 @@ Old client configuration files will be replaced, but should not remain on disk a
 All names must be alphanumeric, period (.), minus (-), or underscore (_) with a maximum of 63 characters.
 
 Options:
-	-L				make changes live
-	-i				use this endpoint Wireguard interface name
-						preference order: -i name, script variable (IFACE), script name (generatewg_<IFACE>), or generate unused wg0-wg255
+	-L			make changes live
+	-i			use this endpoint Wireguard interface name
+					preference order: -i name, script variable (IFACE), script name (generatewg_<IFACE>), or generate unused wg0-wg255
 	--iface			change endpoint Wireguard interface name
-	-p				list client(s) setup and status if no other operations requested, one client name per iteration
-	-P				list all clients setups and status if no other operations requested
-	-G				generate new configuration for client(s)
-						preference towards client specific settings (--dns, --mtu, disabled status, and routes)
-	-D				disable client(s)
-	-E				enable client(s)
-	-R				remove client(s)
+	-p			list client(s) setup and status if no other operations requested, one client name per iteration
+	-P			list all clients setups and status if no other operations requested
+	-G			generate new configuration for client(s)
+					preference towards client specific settings (--dns, --mtu, disabled status, and routes)
+	-D			disable client(s)
+	-E			enable client(s)
+	-R			remove client(s)
 
 
-Client configurations will be regenerated, and clients will require these new configuration files:
+All clients will have required configurations regenerated:
 	--endpoint		endpoint hostname/IP clients connect to
-						if hostname ommited at inception script will attempt to find WAN IP
-						if IP is used and IP changes clients will require configuration file update (script run with -PGL options)
+					if hostname ommited at inception script will attempt to find WAN IP
+					if IP is used and IP changes clients will require configuration file update (script run with -PGL options)
 	--port			endpoint port clients connect to
-						if ommited at inception uses first unused port from 51820 and ascends
-	--gateway-on	route "all" client traffic through endpoint
-						if ommited at inception this is disabled
-	--gateway-off	do not route "all" client traffic through endpoint
-						if ommited at inception this is enabled
+					if ommited at inception uses first unused port from 51820 and ascends
+	--gateway-on		route "all" client traffic through endpoint
+					if ommited at inception this is disabled
+	--gateway-off		do not route "all" client traffic through endpoint
+					if ommited at inception this is enabled
 
 
-Client configurations may need to be regenerated, and clients will require these new configuration files:
+Clients may need to have required configurations regenerated:
 	--network		CIDR address and network for endpoint Wireguard interface (192.168.0.1/24)
-						if ommited at inception a suitable network will be generated from --lan network
+					if ommited at inception a suitable network will be generated from --lan network
 	--ip-beg, --ip-end
-					client IP range begining and ending
-						if ommited at inception starts ascending from --network address and ends at --network address, loops
+				client IP range begining and ending
+					if ommited at inception starts ascending from --network address and ends at --network address, loops
 	--lan			the endpoint system interface that client traffic will be routed to if configured by isolation and gateway settings
-						if ommited at inception this will be the system defafult gateway interface
+					if ommited at inception this will be the system defafult gateway interface
 	--unisolate, --isolate
-					do or do not route --lan network traffic to/from clients through endpoint
-						applied to specific clients via -P or -p options, otherwise acts as server default
-						if ommited at inception this is unisolated
+				do or do not route --lan network traffic to/from clients through endpoint
+					applied to specific clients via -P or -p options, otherwise acts as server default
+					if ommited at inception this is unisolated
 	--route-add, --route-rem
-					add or remove CIDR address (192.168.0.1/32) or network (192.168.0.0/24) to be routed, one per iteration
-						applied to specific clients via -P or -p options, otherwise acts as server default
-						when made live if --lan interface is unisolated specified client(s) or server will be granted access
+				add or remove CIDR address (192.168.0.1/32) or network (192.168.0.0/24) to be routed, one per iteration
+					applied to specific clients via -P or -p options, otherwise acts as server default
+					when made live if --lan interface is unisolated specified client(s) or server will be granted access
 	--dns			DNS server address
-						applied to specific clients via -P or -p options, otherwise acts as server default
-						if ommited at inception this is empty
+					applied to specific clients via -P or -p options, otherwise acts as server default
+					if ommited at inception this is empty
 	--dns-on, --dns-off
-					do or do not force clients to use DNS server
-						applied to specific clients via -P or -p options, otherwise acts as server default
-						if ommited at inception this is off
+				do or do not force clients to use DNS server
+					applied to specific clients via -P or -p options, otherwise acts as server default
+					if ommited at inception this is off
 
 	--mtu			Maximum Transmission Unit size
-						applied to specific clients via -P or -p options, otherwise acts as server default
-						if ommited this allows wg-quick to configure out the MTU
+					applied to specific clients via -P or -p options, otherwise acts as server default
+					if ommited this allows wg-quick to configure out the MTU
