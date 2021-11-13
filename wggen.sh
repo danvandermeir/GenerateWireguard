@@ -283,14 +283,14 @@ else
 fi
 printf -- "${sncnf}" > "$scon"
 if [ "$1" = 'int' ]; then
-#	systemctl enable wg-quick@"$sint".service
-#	systemctl daemon-reload
-#	systemctl start wg-quick@"$sint"
+	systemctl enable wg-quick@"$sint".service
+	systemctl daemon-reload
+	systemctl start wg-quick@"$sint"
 sleep 0.1
 else
 	[ -z "$3" ] && read -n 1 -s -r -p 'Press any key to exit and load changes. VPN connections briefly disconnect.
 ctrl+c to cancel change load (changes load at next change load):
 '
-#	systemctl restart wg-quick@"$sint"
+	systemctl restart wg-quick@"$sint"
 fi
 unset IFS
