@@ -46,13 +46,15 @@ help() {
 					    display=client config file will be displayed
 
 		<command> = int
-			<type> - 1=pass all trafic, 2=remote LAN and VPN network access, 3=VPN network access only
+			<type> - 1=pass all trafic
+			         2=remote LAN and VPN network access
+			         3=VPN network access only
 			<endpoint FQDN/IP> - Where clients attempt to connect to.
 			<endpoint port> - Server listen port where clients attempt to connect to.
 			<endpoint use VPN IP> - n=VPN network overlaps LAN where server has IP, or access not desired
-			                        y=server uses a LAN IP in VPN netework, VPN may overlap with LAN(s)
-			<endpoint VPN IP> - Can overlap LAN(s), also used as network range end even if VPN IP not us>
-			<first client IP> - VPN network IP, or ''=blank to ascend and wrap from endpoint VPN IP. Use>
+						y=server uses a LAN IP in VPN netework, VPN may overlap with LAN(s)
+			<endpoint VPN IP> - Can overlap LAN(s), also used as network range end even if VPN IP not used.
+			<first client IP> - VPN network IP, or ''=blank to ascend and wrap from endpoint VPN IP. Used as network range begin.
 
 		<command> = rep
 			<change client name> - Modify <client> name to <change client name>.\n\n\n"
@@ -119,7 +121,7 @@ elif [ -n "$3" ]; then
 		err "\nClient $3 doesn't exist! Can not modify!"
 	fi
 fi
-while [ -z "$clnt" ] || [ $(grep -sqx "#Client = $clnt" "$scon"; echo $?) -ne $([[ "$1" =~ ^(rem|rep)$ ]]; echo $?) >
+while [ -z "$clnt" ] || [ $(grep -sqx "#Client = $clnt" "$scon"; echo $?) -ne $([[ "$1" =~ ^(rem|rep)$ ]]; echo $?) ]; do
 	[ "$1" = 'int' ] && [ -n "$4" ] && break 1
 	if grep -sq "#Client = " "$scon"; then
 		printf '\nAvailable clients:\n'
@@ -136,7 +138,7 @@ done
 if [ "$1" = 'int' ]; then
 	[ -n "$5" ] && styp="$5" || printf '\nThis script assumes a /24 or 255.255.255.0 network.\n'
 	while ! [[ "$styp" =~ ^(1|2|3)$ ]]; do
-		nonempty styp 'Enter VPN type (1=pass all traffic, 2=remote LAN and VPN network access, 2=VPN networ>
+		nonempty styp 'Enter VPN type (1=pass all traffic, 2=remote LAN and VPN network access, 2=VPN network access only)'
 	done
 	[ -n "$6" ] && swip="$6" || nonempty swip 'Enter endpoint/server FQDN or IP'
 	[ -n "$7" ] && sprt="$7" || nonempty sprt 'Enter endpoint/server listen port'
@@ -146,7 +148,7 @@ if [ "$1" = 'int' ]; then
 	while ! [[ "$suip" =~ ^(y|n)$ ]]; do
 		nonempty suip 'Should VPN server use a LAN IP (y/n)'
 	done
-	[ -n "$9" ] && sip="$9" || nonempty sip 'Enter server VPN IP (IP range end, first client is begin, range wra>
+	[ -n "$9" ] && sip="$9" || nonempty sip 'Enter server VPN IP (IP range end, first client is begin, range wraps at .255)'
 	sip="$sip/24"
 	spri="$(wg genkey)"
 else
