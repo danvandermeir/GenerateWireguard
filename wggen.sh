@@ -37,25 +37,25 @@ help() {
 		rem - Removes client and updates VPN.
 
 	[OPTIONS] - Optionals must be provided in this order including all priors where <command> matches.
-	 	<command> = int|new|rep|rem
-	 		<interface> - /etc/wireguard/<interface>.conf will be used or created
-	 		<client> - Client name. ''=blank
+		<command> = int|new|rep|rem
+			<interface> - /etc/wireguard/<interface>.conf will be used or created
+			<client> - Client name. ''=blank
 
-	 	<command> = int|new|rep
-	 		<file or display> - file=client config will output to /etc/wireguard/* file
-	 				    display=client config file will be displayed
+		<command> = int|new|rep
+			<file or display> - file=client config will output to /etc/wireguard/* file
+					    display=client config file will be displayed
 
-	 	<command> = int
-	 		<type> - 1=remote network access, 2=pass all traffic
-	 		<endpoint FQDN/IP> - Where clients attempt to connect to.
-	 		<endpoint port> - Server listen port where clients attempt to connect to.
-	 		<endpoint use VPN IP> - n=VPN network overlaps LAN where server has IP, or access not desired
-	 					y=server uses a LAN IP in VPN netework, VPN may overlap with LAN(s)
-	 		<endpoint VPN IP> - Can overlap LAN(s), also used as network range end even if VPN IP not used.
-	 		<first client IP> - VPN network IP, or ''=blank to ascend and wrap from endpoint VPN IP. Used as network range begin.
+		<command> = int
+			<type> - 1=pass all trafic, 2=remote LAN and VPN network access, 3=VPN network access only
+			<endpoint FQDN/IP> - Where clients attempt to connect to.
+			<endpoint port> - Server listen port where clients attempt to connect to.
+			<endpoint use VPN IP> - n=VPN network overlaps LAN where server has IP, or access not desired
+			                        y=server uses a LAN IP in VPN netework, VPN may overlap with LAN(s)
+			<endpoint VPN IP> - Can overlap LAN(s), also used as network range end even if VPN IP not us>
+			<first client IP> - VPN network IP, or ''=blank to ascend and wrap from endpoint VPN IP. Use>
 
-	 	<command> = rep
-	 		<change client name> - Modify <client> name to <change client name>.\n\n\n"
+		<command> = rep
+			<change client name> - Modify <client> name to <change client name>.\n\n\n"
 }
 ! [[ "$1" =~ ^(new|rem|rep|int)$ ]] && help && exit 1
 if [ "$1" = 'int' ]; then
@@ -94,7 +94,7 @@ while [ -z "$sint" ]; do
 		done
 	fi
 	sint=''
-	[ "$1" = 'int' ] && sint='Enter new' || sint='Enter existing'
+	[ "$1" = 'int' ] && sint='\nEnter new' || sint='\nEnter existing'
 	sint="$sint interface name (case sensitive)"
 	nonempty sint "$sint"
 	if [ "$1" = 'int' ]; then
@@ -119,7 +119,7 @@ elif [ -n "$3" ]; then
 		err "\nClient $3 doesn't exist! Can not modify!"
 	fi
 fi
-while [ -z "$clnt" ] || [ $(grep -sqx "#Client = $clnt" "$scon"; echo $?) -ne $([[ "$1" =~ ^(rem|rep)$ ]]; echo $?) ]; do
+while [ -z "$clnt" ] || [ $(grep -sqx "#Client = $clnt" "$scon"; echo $?) -ne $([[ "$1" =~ ^(rem|rep)$ ]]; echo $?) >
 	[ "$1" = 'int' ] && [ -n "$4" ] && break 1
 	if grep -sq "#Client = " "$scon"; then
 		printf '\nAvailable clients:\n'
@@ -129,14 +129,14 @@ while [ -z "$clnt" ] || [ $(grep -sqx "#Client = $clnt" "$scon"; echo $?) -ne $(
 	elif [[ "$1" =~ ^(rem|rep)$ ]]; then
 		errout 'No clients exist!'
 	fi
-	[[ "$1" =~ ^(new|int)$ ]] && clnt='Enter new' || clnt='Enter existing'
+	[[ "$1" =~ ^(new|int)$ ]] && clnt='\nEnter new' || clnt='\nEnter existing'
 	clnt="$clnt client name (case sensitive)"
 	[ "$1" = 'int' ] && printf "$clnt or blank to skip: " && read clnt && break 1 || nonempty clnt "$clnt"
 done
 if [ "$1" = 'int' ]; then
 	[ -n "$5" ] && styp="$5" || printf '\nThis script assumes a /24 or 255.255.255.0 network.\n'
-	while ! [[ "$styp" =~ ^(1|2)$ ]]; do
-		nonempty styp 'Enter VPN type (1=remote network access, 2=pass all traffic)'
+	while ! [[ "$styp" =~ ^(1|2|3)$ ]]; do
+		nonempty styp 'Enter VPN type (1=pass all traffic, 2=remote LAN and VPN network access, 2=VPN networ>
 	done
 	[ -n "$6" ] && swip="$6" || nonempty swip 'Enter endpoint/server FQDN or IP'
 	[ -n "$7" ] && sprt="$7" || nonempty sprt 'Enter endpoint/server listen port'
@@ -146,13 +146,15 @@ if [ "$1" = 'int' ]; then
 	while ! [[ "$suip" =~ ^(y|n)$ ]]; do
 		nonempty suip 'Should VPN server use a LAN IP (y/n)'
 	done
-	[ -n "$9" ] && sip="$9" || nonempty sip 'Enter server VPN IP (IP range end, first client is begin, range wraps at .255)'
+	[ -n "$9" ] && sip="$9" || nonempty sip 'Enter server VPN IP (IP range end, first client is begin, range wra>
 	sip="$sip/24"
 	spri="$(wg genkey)"
 else
 	styp="$(grep -i '#Type = ' "$scon")"
 	styp="${styp###Type = }"
 	[ -z "$styp" ] && errout 'No type found! Corrupt file!'
+	sdns="$(grep -i '#DNS = ' "$scon")"
+	sdns="${sdns###}"
 	send="$(grep -i '#Endpoint = ' "$scon")"
 	send="${send###}"
 	[ -z "$send" ] && errout 'No endpoint found! Corrupt file!'
@@ -168,17 +170,27 @@ smsk="/${sip#*/}"
 sip="${sip%/*}"
 seip="${sip##*.}"
 sip="${sip%.*}."
+if [ $styp -ne 3 ]; then
+	aint="$(ip r|grep -w default)"
+	aint="${aint/*dev }"
+	aint="${aint/ *}"
+	aip="$(ip a show $aint|grep -w inet)"
+	aip="${aip/*inet }"
+	aip="${aip%% *}"
+	amsk="/${aip#*/}"
+fi
 [ -z "$sip" ] || [ -z "$seip" ] || [ -z "$smsk" ] && errout 'Could not determine server LAN IP! Corrupt file!'
 spub="$(wg pubkey<<<$spri)"
 [ -z "$spub" ] && errout 'Bad or missing server public key! Corrupt file!'
 if [ "$1" = 'int' ]; then
 	if [ -n "$clnt" ]; then
 		if [ -n "$9" ]; then
-			cip="${10##*.}"
+			cip="${10}"
 		else
 			printf '\nEnter client VPN IP (blank ascends and wraps from server LAN IP): '
 			read cip
 		fi
+		cip="${cip##*.}"
 		if [ -z "$cip" ] || [ "$sip$seip" = "$cip" ]; then
 			if [ "$suip" = 'n' ]; then
 				cip="$seip"
@@ -209,10 +221,9 @@ elif [ "$1" = 'rep' ]; then
 	cip="${cip##AllowedIPs = }"
 	cip="${cip%/*}"
 	cip="${cip##*.}"
-	nclt="$clnt"
-	if [ -n "$5" ]; then
+	if [ -n "$4" ]; then
 		nclt="$5"
-		grep -xq "#Client = $nclt" "$scon" && err 'New client name exists!'
+		grep -xsq "#Client = $nclt" "$scon" && err 'New client name exists!' && nclt="$clnt"
 	fi
 	while grep -qsx "#Client = $nclt" "$scon"; do
 		printf '\nEnter new client name (case sensitive) or blank to regenerate keys only: '
@@ -224,12 +235,17 @@ if [ "$1" != 'rem' ] && [ -n "$clnt" ]; then
 	cpri="$(wg genkey)"
 	cpub="$(wg pubkey<<<$cpri)"
 	cpsk="$(wg genpsk)"
-	cip="AllowedIPs = $sip$cip"
-	[ $styp -eq 1 ] && caip="$sip"'0'"$smsk" || caip='0.0.0.0/0'
-	sccnf=("#Client = $clnt" '[Peer]' "PublicKey = $cpub" "PresharedKey = $cpsk" "$cip/32" ' ')
+	cip="$sip$cip"
+	case $styp in
+		1) caip='0.0.0.0/0';;
+		2) caip="${aip%.*}"'.0'"$amsk";;
+		3) caip="$sip"'0'"$smsk";;
+	esac
+	sccnf=("#Client = $clnt" '[Peer]' "PublicKey = $cpub" "PresharedKey = $cpsk" "AllowedIPs = $cip/32" ' ')
 	ccnf="[Interface]
 PrivateKey = $cpri
-$cip$smsk
+Address = $cip$smsk
+$sdns
 
 [Peer]
 PublicKey = $spub
@@ -244,7 +260,7 @@ PersistentKeepalive = 25\n"
 	fi
 	[ -n "$4" ] && cfle="$4" || nonempty cfle 'How to present client configuration (file/display)'
 	if [ "$cfle" = 'file' ]; then
-                ! [ -d "/etc/wireguard/$sint" ] && mkdir "/etc/wireguard/$sint"
+		! [ -d "/etc/wireguard/$sint" ] && mkdir "/etc/wireguard/$sint"
 		printf -- "${ccnf}" > "$ccon"
 		printf "\n\nClient config file is $ccon"
 	else
@@ -283,12 +299,15 @@ else
 fi
 printf -- "${sncnf}" > "$scon"
 if [ "$1" = 'int' ]; then
+	echo "1" > /proc/sys/net/ipv4/ip_forward
+	sysctl net.ipv4.ip_forward=1
 	systemctl enable wg-quick@"$sint".service
 	systemctl daemon-reload
 	systemctl start wg-quick@"$sint"
 sleep 0.1
 else
-	[ -z "$3" ] && read -n 1 -s -r -p 'Press any key to exit and load changes. VPN connections briefly disconnect.
+	[ -z "$3" ] && read -n 1 -s -r -p '
+Press any key to exit and load changes. VPN connections briefly disconnect.
 ctrl+c to cancel change load (changes load at next change load):
 '
 	systemctl restart wg-quick@"$sint"
