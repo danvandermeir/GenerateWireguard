@@ -46,13 +46,15 @@ help() {
 			                    display=client config file will be displayed
 
 		<command> = int
-			<type> - 1=pass all trafic, 2=remote LAN and VPN network access, 3=VPN network access only
+			<type> - 1=pass all trafic
+			         2=remote LAN and VPN network access
+			         3=VPN network access only
 			<endpoint FQDN/IP> - Where clients attempt to connect to.
 			<endpoint port> - Server listen port where clients attempt to connect to.
 			<endpoint use VPN IP> - n=VPN network overlaps LAN where server has IP, or access not desired
 			                        y=server uses a LAN IP in VPN netework, VPN may overlap with LAN(s)
-			<endpoint VPN IP> - Can overlap LAN(s), also used as network range end even if VPN IP not us>
-			<first client IP> - VPN network IP, or ''=blank to ascend and wrap from endpoint VPN IP. Use>
+			<endpoint VPN IP> - Can overlap LAN(s), also used as network range end even if VPN IP not used.
+			<first client IP> - VPN network IP, or ''=blank to ascend and wrap from endpoint VPN IP. Used as network range begin.
 
 		<command> = rep
 			<change client name> - Modify <client> name to <change client name>.\n\n\n"
@@ -119,7 +121,7 @@ elif [ -n "$3" ]; then
 		err "\nClient $3 doesn't exist! Can not modify!"
 	fi
 fi
-while [ -z "$clnt" ] || [ $(grep -sqx "#Client = $clnt" "$scon"; echo $?) -ne $([[ "$1" =~ ^(rem|rep)$ ]]; echo $?) >
+while [ -z "$clnt" ] || [ $(grep -sqx "#Client = $clnt" "$scon"; echo $?) -ne $([[ "$1" =~ ^(rem|rep)$ ]]; echo $?) ]; do
 	[ "$1" = 'int' ] && [ -n "$4" ] && break 1
 	if grep -sq "#Client = " "$scon"; then
 		printf '\nAvailable clients:\n'
@@ -136,7 +138,7 @@ done
 if [ "$1" = 'int' ]; then
 	[ -n "$5" ] && styp="$5" || printf '\nThis script assumes a /24 or 255.255.255.0 network.\n'
 	while ! [[ "$styp" =~ ^(1|2|3)$ ]]; do
-		nonempty styp 'Enter VPN type (1=pass all traffic, 2=remote LAN and VPN network access, 2=VPN networ>
+		nonempty styp 'Enter VPN type (1=pass all traffic, 2=remote LAN and VPN network access, 2=VPN network access only)'
 	done
 	[ -n "$6" ] && swip="$6" || nonempty swip 'Enter endpoint/server FQDN or IP'
 	[ -n "$7" ] && sprt="$7" || nonempty sprt 'Enter endpoint/server listen port'
@@ -146,7 +148,7 @@ if [ "$1" = 'int' ]; then
 	while ! [[ "$suip" =~ ^(y|n)$ ]]; do
 		nonempty suip 'Should VPN server use a LAN IP (y/n)'
 	done
-	[ -n "$9" ] && sip="$9" || nonempty sip 'Enter server VPN IP (IP range end, first client is begin, range wra>
+	[ -n "$9" ] && sip="$9" || nonempty sip 'Enter server VPN IP (IP range end, first client is begin, range wraps at .255)'
 	sip="$sip/24"
 	spri="$(wg genkey)"
 else
@@ -210,7 +212,7 @@ elif [ "$1" = 'new' ]; then
 	cip="${cip%/*}"
 	cip="${cip##*.}"
 	if [ -f "$scon" ]; then
-		while grep -v '#Address = ' "$scon"|grep -q "$sip$cip"; do
+		while grep -v '#Address = ' "$scon"|grep -q "$sip$cip/"; do
 			cip=$((cip + 1))
 			[ $cip -eq 255 ] && cip=1
 			[ "$seip" = "$cip" ] && errout 'Could not determine good ip!'
@@ -238,7 +240,7 @@ if [ "$1" != 'rem' ] && [ -n "$clnt" ]; then
 	cip="$sip$cip"
 	case $styp in
 		1) caip='0.0.0.0/0';;
-		2) caip="${aip%.*}"'.0'"$amsk";;
+		2) caip="$caip$sip"'0'"$smsk, ${aip%.*}"'.0'"$amsk";;
 		3) caip="$sip"'0'"$smsk";;
 	esac
 	sccnf=("#Client = $clnt" '[Peer]' "PublicKey = $cpub" "PresharedKey = $cpsk" "AllowedIPs = $cip/32" ' ')
@@ -273,6 +275,10 @@ if [ "$1" = 'int' ]; then
 	sip="Address = $sip$seip$smsk"
 	[ "$suip" = 'n' ] && sip="#$sip"
 	scnf=("[Interface]" "PrivateKey = $spri" "ListenPort = $sprt" "$sip" "#$send" "#Type = $styp")
+	[ $styp -ne 3 ] && scnf=("${scnf[@]}" \
+'PostUp = nft add table nat' "PostUp = nft add chain nat postrouting '{ type nat hook postrouting priority 100 ; policy drop ; }'" \
+"PostUp = nft add rule nat postrouting iif $sint ip daddr ${aip%.*}"'.0'"$amsk masquerade" \
+"PreDown = nft delete rule nat postrouting handle \$(nft -a list ruleset|grep '$sint'|grep 'masquerade'|rev|cut -d' ' -f1|rev)")
 else
 	 scnf=($(<"${scon}"))
 fi
@@ -299,17 +305,17 @@ else
 fi
 printf -- "${sncnf}" > "$scon"
 if [ "$1" = 'int' ]; then
-	echo "1" > /proc/sys/net/ipv4/ip_forward
-	sysctl net.ipv4.ip_forward=1
-	systemctl enable wg-quick@"$sint".service
-	systemctl daemon-reload
-	systemctl start wg-quick@"$sint"
+#       echo "1" > /proc/sys/net/ipv4/ip_forward
+#       sysctl net.ipv4.ip_forward=1
+#       systemctl enable wg-quick@"$sint".service
+#       systemctl daemon-reload
+#       systemctl start wg-quick@"$sint"
 sleep 0.1
 else
 	[ -z "$3" ] && read -n 1 -s -r -p '
 Press any key to exit and load changes. VPN connections briefly disconnect.
 ctrl+c to cancel change load (changes load at next change load):
 '
-	systemctl restart wg-quick@"$sint"
+#       systemctl restart wg-quick@"$sint"
 fi
 unset IFS
