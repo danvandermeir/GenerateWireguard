@@ -276,7 +276,9 @@ if [ "$1" = 'int' ]; then
 	[ "$suip" = 'n' ] && sip="#$sip"
 	scnf=("[Interface]" "PrivateKey = $spri" "ListenPort = $sprt" "$sip" "#$send" "#Type = $styp")
 	[ $styp -ne 3 ] && scnf=("${scnf[@]}" \
-'PostUp = nft add table nat' "PostUp = nft add chain nat postrouting '{ type nat hook postrouting priority 100 ; policy drop ; }'" \
+'PostUp = sysctl net.ipv4.ip_forward=1' \
+'PostUp = nft add table nat' \
+"PostUp = nft add chain nat postrouting '{ type nat hook postrouting priority 100 ; policy drop ; }'" \
 "PostUp = nft add rule nat postrouting iif $sint ip daddr ${aip%.*}"'.0'"$amsk masquerade" \
 "PreDown = nft delete rule nat postrouting handle \$(nft -a list ruleset|grep '$sint'|grep 'masquerade'|rev|cut -d' ' -f1|rev)")
 else
@@ -305,17 +307,17 @@ else
 fi
 printf -- "${sncnf}" > "$scon"
 if [ "$1" = 'int' ]; then
-#       echo "1" > /proc/sys/net/ipv4/ip_forward
-#       sysctl net.ipv4.ip_forward=1
-#       systemctl enable wg-quick@"$sint".service
-#       systemctl daemon-reload
-#       systemctl start wg-quick@"$sint"
+       echo "1" > /proc/sys/net/ipv4/ip_forward
+       sysctl net.ipv4.ip_forward=1
+       systemctl enable wg-quick@"$sint".service
+       systemctl daemon-reload
+       systemctl start wg-quick@"$sint"
 sleep 0.1
 else
 	[ -z "$3" ] && read -n 1 -s -r -p '
 Press any key to exit and load changes. VPN connections briefly disconnect.
 ctrl+c to cancel change load (changes load at next change load):
 '
-#       systemctl restart wg-quick@"$sint"
+       systemctl restart wg-quick@"$sint"
 fi
 unset IFS
