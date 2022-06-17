@@ -238,9 +238,11 @@ if [ "$1" != 'rem' ] && [ -n "$clnt" ]; then
 	cpub="$(wg pubkey<<<$cpri)"
 	cpsk="$(wg genpsk)"
 	cip="$sip$cip"
+	ccnf="$(ip a show $aint|grep -w inet)"
+	[[ "$ccnf" == *','* ]] && ccnf=",${ccnf#*,}" || ccnf=''
 	case $styp in
 		1) caip='0.0.0.0/0';;
-		2) caip="$caip$sip"'0'"$smsk, ${aip%.*}"'.0'"$amsk";;
+		2) caip="$caip$sip"'0'"$smsk, ${aip%.*}"'.0'"$amsk$ccnf";;
 		3) caip="$sip"'0'"$smsk";;
 	esac
 	sccnf=("#Client = $clnt" '[Peer]' "PublicKey = $cpub" "PresharedKey = $cpsk" "AllowedIPs = $cip/32" ' ')
