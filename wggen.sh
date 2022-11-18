@@ -310,16 +310,17 @@ fi
 printf -- "${sncnf}" > "$scon"
 if [ "$1" = 'int' ]; then
        echo "1" > /proc/sys/net/ipv4/ip_forward
-       sysctl net.ipv4.ip_forward=1
+       sysctl -w net.ipv4.ip_forward=1
+       echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
        systemctl enable wg-quick@"$sint".service
        systemctl daemon-reload
        systemctl start wg-quick@"$sint"
 sleep 0.1
 else
 	[ -z "$3" ] && read -n 1 -s -r -p '
-Press any key to exit and load changes. VPN connections briefly disconnect.
+Press any key to exit and load changes.
 ctrl+c to cancel change load (changes load at next change load):
 '
-       systemctl restart wg-quick@"$sint"
+       wg syncconf "$sint" <(wg-quick strip "$scon")
 fi
 unset IFS
