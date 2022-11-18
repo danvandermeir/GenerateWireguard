@@ -308,19 +308,22 @@ else
 	done
 fi
 printf -- "${sncnf}" > "$scon"
-if [ "$1" = 'int' ]; then
-       echo "1" > /proc/sys/net/ipv4/ip_forward
-       sysctl -w net.ipv4.ip_forward=1
-       echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-       systemctl enable wg-quick@"$sint".service
-       systemctl daemon-reload
-       systemctl start wg-quick@"$sint"
-sleep 0.1
-else
-	[ -z "$3" ] && read -n 1 -s -r -p '
+read -n 1 -s -r -p '
 Press any key to exit and load changes.
-ctrl+c to cancel change load (changes load at next change load):
+ctrl+c to cancel change load (changes happen at next interface load):
 '
-       wg syncconf "$sint" <(wg-quick strip "$scon")
+if [ "$1" = 'int' ]; then
+	echo "1" > /proc/sys/net/ipv4/ip_forward
+	sysctl -w net.ipv4.ip_forward=1
+	echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+	systemctl enable wg-quick@"$sint".service
+	systemctl daemon-reload
+	systemctl start wg-quick@"$sint"
+else
+	if ip a show "$sint"|grep -q 'does not exist'; then
+		err "Interface $sint is not up! Cannot load changes!"
+	else
+		wg syncconf "$sint" <(wg-quick strip "$scon")
+	fi
 fi
 unset IFS
