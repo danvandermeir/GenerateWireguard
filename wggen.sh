@@ -138,7 +138,7 @@ done
 if [ "$1" = 'int' ]; then
 	[ -n "$5" ] && styp="$5" || printf '\nThis script assumes a /24 or 255.255.255.0 network.\n'
 	while ! [[ "$styp" =~ ^(1|2|3)$ ]]; do
-		nonempty styp 'Enter VPN type (1=pass all traffic, 2=remote LAN and VPN network access, 2=VPN network access only)'
+		nonempty styp 'Enter VPN type (1=pass all traffic, 2=remote LAN and VPN network access, 3=VPN network access only)'
 	done
 	[ -n "$6" ] && swip="$6" || nonempty swip 'Enter endpoint/server FQDN or IP'
 	[ -n "$7" ] && sprt="$7" || nonempty sprt 'Enter endpoint/server listen port'
