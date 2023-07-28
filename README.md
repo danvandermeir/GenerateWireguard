@@ -5,9 +5,9 @@ New: <INTNAME> <#OFPEERS> <CIDR>
 Remove peer: <INTNAME> rem <PEER#> (opt)rebuild/norebuild
 Replace keys: <INTNAME> rep <PEER#> (opt)rebuild/norebuild
 Replace endpoint:  <INTNAME> end <PEER#> <ENDPOINT> (opt)rebuild/norebuild
-
-You will be asked for unprovided or seemingly incorrect required information.
 ```
+You will be asked for unprovided or seemingly incorrect required information. Files are dropped into a subfolder under /etc/wireguard/
+
 
 For the time being you can use [this script](https://github.com/danvandermeir/GenerateWireguard/blob/main/wggen.sh) to impliment and manage clients of a Wireguard VPN server via CLI while I finish the far more robust version of the script. I took a dive into 2FA with Wireguard, and I'll be adding that in.
 ```
